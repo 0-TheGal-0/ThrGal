@@ -1,0 +1,17 @@
+{
+    "name": "Procedural",
+    "rootNamespace": "",
+    "references": [
+        "GUID:6cdffcd16d9cff04b9bb7c8d1e8571dd",
+        "GUID:b0214a6008ed146ff8f122a6a9c2f6cc"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
