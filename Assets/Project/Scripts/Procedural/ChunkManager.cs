@@ -13,8 +13,16 @@ namespace Game.Procedural {
                  "это временное решение до этапа 8 (оптимизация).")]
         [SerializeField] private int debugGridRadius = 15;
 
+        [Tooltip("Сколько секунд чанк проведёт в состоянии Fading, прежде чем перейти в Dark " +
+                 "(и стать кандидатом на регенерацию). Даёт игроку 'окно', чтобы вернуться " +
+                 "со светом и не потерять чанк.")]
+        [SerializeField] private float fadeDuration = 3f;
+
         private ILightRegistry _lightRegistry;
+        private Camera _mainCamera;
+
         private readonly Dictionary<Vector2Int, ChunkState> _chunkStates = new();
+        private readonly Dictionary<Vector2Int, float> _fadeTimers = new();
 
         public event Action<Vector2Int, ChunkState> OnChunkStateChanged;
 
@@ -23,10 +31,18 @@ namespace Game.Procedural {
             _lightRegistry = lightRegistry;
         }
 
+        private void Start() {
+            _mainCamera = Camera.main;
+        }
+
         public Vector2Int WorldToChunkCoord(Vector3 worldPosition) {
             int x = Mathf.FloorToInt(worldPosition.x / chunkSize);
             int z = Mathf.FloorToInt(worldPosition.z / chunkSize);
             return new Vector2Int(x, z);
+        }
+
+        public Vector3 ChunkToWorldCenter(Vector2Int coord) {
+            return new Vector3((coord.x + 0.5f) * chunkSize, 0f, (coord.y + 0.5f) * chunkSize);
         }
 
         public ChunkState GetChunkState(Vector2Int coord) {
@@ -34,29 +50,68 @@ namespace Game.Procedural {
         }
 
         private void Update() {
-            // Наивная проверка по всем чанкам дебаг-грида каждый кадр — специально не оптимизирую
-            // сейчас (Job System/Burst это этап 8). Цель этапа 1 — проверить саму логику, не скорость.
             for (int x = -debugGridRadius; x <= debugGridRadius; x++) {
                 for (int z = -debugGridRadius; z <= debugGridRadius; z++) {
                     var coord = new Vector2Int(x, z);
-                    var newState = IsChunkLit(coord) ? ChunkState.Lit : ChunkState.Dark;
-                    SetChunkState(coord, newState);
+                    UpdateChunk(coord);
                 }
             }
         }
 
+        private void UpdateChunk(Vector2Int coord) {
+            bool lit = IsChunkLit(coord);
+            var currentState = GetChunkState(coord);
+
+            if (lit) {
+                _fadeTimers.Remove(coord);
+                SetChunkState(coord, ChunkState.Lit);
+                return;
+            }
+
+            switch (currentState) {
+                case ChunkState.Lit:
+                    _fadeTimers[coord] = 0f;
+                    SetChunkState(coord, ChunkState.Fading);
+                    break;
+
+                case ChunkState.Fading:
+                    float timer = _fadeTimers.TryGetValue(coord, out var t) ? t : 0f;
+                    timer += Time.deltaTime;
+                    _fadeTimers[coord] = timer;
+
+                    if (timer >= fadeDuration && !IsChunkVisibleToCamera(coord)) {
+                        _fadeTimers.Remove(coord);
+                        SetChunkState(coord, ChunkState.Dark);
+                    }
+                    break;
+
+                case ChunkState.Unseen:
+                case ChunkState.Dark:
+                    break;
+            }
+        }
+
         private bool IsChunkLit(Vector2Int coord) {
-            Vector3 chunkCenter = new Vector3(
-                (coord.x + 0.5f) * chunkSize, 0f, (coord.y + 0.5f) * chunkSize);
+            Vector3 chunkCenter = ChunkToWorldCenter(coord);
 
             foreach (var handle in _lightRegistry.ActiveSources) {
-                if (handle.Source == null) continue; // источник могли уничтожить, не почистив регистрацию
+                if (handle.Source == null) continue;
 
                 Vector3 flatSourcePos = new Vector3(handle.Source.position.x, 0f, handle.Source.position.z);
                 if (Vector3.Distance(flatSourcePos, chunkCenter) <= handle.Radius)
                     return true;
             }
             return false;
+        }
+
+        private bool IsChunkVisibleToCamera(Vector2Int coord) {
+            if (_mainCamera == null) return false;
+
+            Vector3 center = ChunkToWorldCenter(coord);
+            var bounds = new Bounds(center, new Vector3(chunkSize, chunkSize, chunkSize));
+
+            var planes = GeometryUtility.CalculateFrustumPlanes(_mainCamera);
+            return GeometryUtility.TestPlanesAABB(planes, bounds);
         }
 
         private void SetChunkState(Vector2Int coord, ChunkState newState) {
@@ -67,7 +122,6 @@ namespace Game.Procedural {
             OnChunkStateChanged?.Invoke(coord, newState);
         }
 
-        // Видно только в Scene View (или в Game View с включённым Gizmos) во время Play Mode.
         private void OnDrawGizmos() {
             if (!Application.isPlaying) return;
 
@@ -75,9 +129,12 @@ namespace Game.Procedural {
                 Vector3 center = new Vector3(
                     (kvp.Key.x + 0.5f) * chunkSize, 0.05f, (kvp.Key.y + 0.5f) * chunkSize);
 
-                Gizmos.color = kvp.Value == ChunkState.Lit
-                    ? new Color(1f, 0.8f, 0.2f, 0.5f)   // тёплый жёлтый — освещено
-                    : new Color(0.1f, 0.1f, 0.25f, 0.5f); // холодный тёмный — тьма
+                Gizmos.color = kvp.Value switch {
+                    ChunkState.Lit => new Color(1f, 0.8f, 0.2f, 0.5f),
+                    ChunkState.Fading => new Color(0.9f, 0.4f, 0.1f, 0.5f),
+                    ChunkState.Dark => new Color(0.1f, 0.1f, 0.25f, 0.5f),
+                    _ => new Color(0.3f, 0.3f, 0.3f, 0.2f)
+                };
 
                 Gizmos.DrawCube(center, new Vector3(chunkSize * 0.9f, 0.05f, chunkSize * 0.9f));
             }

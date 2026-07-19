@@ -8,6 +8,7 @@ namespace Game.Core {
     public enum ChunkState {
         Unseen,
         Lit,
+        Fading,
         Dark
     }
 
@@ -31,18 +32,12 @@ namespace Game.Core {
     }
 
     // Реализуется в Procedural.asmdef на этапе 1-3
-    public interface IChunkManager {
-        Vector2Int WorldToChunkCoord(Vector3 worldPosition);
-        ChunkState GetChunkState(Vector2Int coord);
-        event Action<Vector2Int, ChunkState> OnChunkStateChanged;
-    }
-
-    // Реализуется в AI.asmdef на этапе 4
-    public interface ICompanionController {
-        Vector3 Position { get; }
-        event Action OnLost;
-        event Action OnDied;
-    }
+public interface IChunkManager {
+    Vector2Int WorldToChunkCoord(Vector3 worldPosition);
+    Vector3 ChunkToWorldCenter(Vector2Int coord); // новое — обратное преобразование
+    ChunkState GetChunkState(Vector2Int coord);
+    event Action<Vector2Int, ChunkState> OnChunkStateChanged;
+}
 
     // Реализуется в Gameplay.asmdef на этапе 5
     public interface IRelationshipManager {
@@ -50,6 +45,29 @@ namespace Game.Core {
         float Fatigue { get; }
         event Action<float> OnTrustChanged;
         event Action<float> OnFatigueChanged;
+
+        // Компаньон физически не может Lost/Dead себя сам решить — это функция от
+        // Trust/Fatigue, которые считает RelationshipManager. Он лишь сигнализирует
+        // об этом решении, а CompanionController слушает и переключает свой FSM.
+        event Action OnCompanionLostTriggered;
+        event Action OnCompanionDeathTriggered;
+        event Action OnCompanionRecoveredTriggered; // шанс найти дорогу обратно из Lost
+
+        void AddTrust(float delta);
+        void AddFatigue(float delta);
+
+        // Push, не pull: CompanionController вызывает это каждый кадр сам.
+        // Так RelationshipManager не инжектит ICompanionController — иначе получили бы
+        // циклическую DI-зависимость (CompanionController ← RelationshipManager ← CompanionController).
+        void ReportCompanionStatus(bool isAtFire, float distanceToPlayer);
+    }
+
+    // Реализуется в AI.asmdef на этапе 4
+    public interface ICompanionController {
+        Vector3 Position { get; }
+        bool IsAtFire { get; } // добавлено этап 5 — используется другими системами (UI, Sanity) без знания всего FSM
+        event Action OnLost;
+        event Action OnDied;
     }
 
     // Реализуется в Gameplay.asmdef на этапе 6
@@ -63,4 +81,14 @@ namespace Game.Core {
         void Save();
         void Load();
     }
+    // Реализуется в Procedural.asmdef на этапе 2. Список "якорных" чанков (сюжетные точки),
+    // которые ChunkContentSpawner обязан пропускать при регенерации — тело девочки, ключевые
+    // предметы и т.п. не должны потеряться при перегенерации мира.
+    public interface IChunkAnchorRegistry {
+        bool IsAnchor(Vector2Int coord);
+        void RegisterAnchor(Vector2Int coord);
+        void UnregisterAnchor(Vector2Int coord);
+    }
+
+
 }

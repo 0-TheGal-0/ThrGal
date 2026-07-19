@@ -3,11 +3,14 @@ using Game.Procedural;
 using UnityEngine;
 using VContainer;
 using VContainer.Unity;
+using Game.AI;
+using Game.Gameplay;
 
 namespace Game.Bootstrap {
     // Вешается на единственный GameObject в корневой сцене (например "Root" / "Composition Root").
     // Сцена должна быть загружена первой (Additive-сцена или первая в Build Settings).
     public class GameLifetimeScope : LifetimeScope {
+        [SerializeField] private int worldSeed = 12345; 
         protected override void Configure(IContainerBuilder builder) {
             // GameManager — единственная реализация на этапе 0.
             builder.Register<GameManager>(Lifetime.Singleton);
@@ -29,6 +32,11 @@ namespace Game.Bootstrap {
             // их нашёл и вызвал их [Inject]-метод. RegisterComponentInHierarchy ищет
             // компонент на сценe автоматически — не нужно вручную тащить ссылку через инспектор.
             builder.RegisterComponentInHierarchy<PlayerController>();
+            builder.RegisterComponentInHierarchy<CompanionController>().As<ICompanionController>();
+            builder.RegisterComponentInHierarchy<RelationshipManager>().As<IRelationshipManager>();
+            builder.RegisterComponentInHierarchy<PlayerFatigueFeedback>();
+
+
 
             // Этап 1: ChunkManager регистрируется и как конкретный тип, и как IChunkManager —
             // второе нужно, чтобы LightSource (и любой другой скрипт) мог запросить его через
@@ -42,6 +50,8 @@ namespace Game.Bootstrap {
 
             // Слой 2 тумана: публикует данные ILightRegistry в шейдеры каждый кадр.
             builder.RegisterComponentInHierarchy<LightFogFeeder>();
+            // Этап 2: слушает Dark-переходы от ChunkManager и подменяет placeholder-контент чанка.
+            builder.RegisterComponentInHierarchy<ChunkContentSpawner>();
 
             // ВАЖНО: RegisterComponentInHierarchy находит и инжектит только ОДИН экземпляр
             // компонента в сцене (внутри — единственный Lazy<T>). У нас несколько LightSource
@@ -49,14 +59,24 @@ namespace Game.Bootstrap {
             // RegisterComponentInHierarchy используем RegisterBuildCallback: он выполняется
             // один раз сразу после сборки контейнера и вручную инжектит КАЖДЫЙ найденный
             // в сцене LightSource через resolver.Inject(...).
-            builder.RegisterBuildCallback(resolver => {
+            builder.RegisterBuildCallback(resolver =>   {
                 var lightSources = UnityEngine.Object.FindObjectsByType<LightSource>(
                     FindObjectsSortMode.None);
-
                 foreach (var lightSource in lightSources) {
                     resolver.Inject(lightSource);
                 }
             });
+            builder.RegisterBuildCallback(resolver => {
+                var anchors = UnityEngine.Object.FindObjectsByType<NarrativeAnchor>(FindObjectsSortMode.None);
+                foreach (var anchor in anchors) {
+                    resolver.Inject(anchor);
+                }
+            });
+            builder.Register<ChunkSeedProvider>(Lifetime.Singleton)
+    .WithParameter("globalSeed", worldSeed);
+
+            builder.RegisterComponentInHierarchy<ChunkAnchorRegistry>().As<IChunkAnchorRegistry>();
+
         }
     }
-}
+}   
