@@ -28,6 +28,13 @@ namespace Game.Procedural {
         private IChunkAnchorRegistry _anchorRegistry;
         private ChunkSeedProvider _seedProvider;
         private ChunkObjectPool _pool;
+        [Tooltip("Не выбирать тот же префаб, что стоял в чанке до этого. Без этого при трёх префабах " +
+         "около 40% регенераций выглядят как «ничего не изменилось».")]
+        [SerializeField] private bool avoidRepeatingPrevious = true;
+
+        // Сколько раз чанк уже регенерировался. Пока живёт только в памяти;
+        // на этапе 7 это значение нужно будет сохранять вместе с остальным состоянием мира.
+        private readonly Dictionary<Vector2Int, int> _visitCounts = new();
 
         // Что сейчас заспавнено в чанке — нужно и чтобы вернуть старый инстанс в пул
         // перед подменой, и чтобы знать, из какого префаба он был создан (для Release).
@@ -69,39 +76,50 @@ namespace Game.Procedural {
                 return;
             }
 
-            if (_spawnedContent.TryGetValue(coord, out var old) && old.instance != null) {
-                _pool.Release(old.prefab, old.instance);
+            _visitCounts.TryGetValue(coord, out int visit);
+            _visitCounts[coord] = visit + 1;
+
+            GameObject previousPrefab = null;
+            if (_spawnedContent.TryGetValue(coord, out var old)) {
+                previousPrefab = old.prefab;
+                if (old.instance != null)
+                    _pool.Release(old.prefab, old.instance);
             }
 
-            var random = _seedProvider.GetRandom(coord);
-            var chosen = PickWeighted(random);
+            var random = _seedProvider.GetRandom(coord, visit);
+            var chosen = PickWeighted(random, avoidRepeatingPrevious ? previousPrefab : null);
+
 
             Vector3 worldCenter = _chunkManager.ChunkToWorldCenter(coord);
             var instance = _pool.Get(chosen, worldCenter, Quaternion.identity, transform);
             _spawnedContent[coord] = (instance, chosen);
         }
 
-        private GameObject PickWeighted(System.Random random) {
-            // GetSanityFactor() пока всегда 0 — реального ISanityManager ещё нет (этап 6).
-            // Когда появится, тут будет [0..1], где 1 = минимальный Sanity игрока.
+        private GameObject PickWeighted(System.Random random, GameObject exclude) {
             float sanityFactor = GetSanityFactor();
 
             float totalWeight = 0f;
-            foreach (var entry in weightedPrefabs)
+            foreach (var entry in weightedPrefabs) {
+                if (entry.prefab == exclude) continue;
                 totalWeight += entry.baseWeight + entry.lowSanityBias * sanityFactor;
+            }
+            // Исключать нечего (один вариант в пуле) — выбираем как обычно.
+            if (totalWeight <= 0f && exclude != null)
+                return PickWeighted(random, null);
 
-            // System.Random.NextDouble(), не UnityEngine.Random — чтобы выбор был
-            // воспроизводим по seed'у чанка, а не по глобальному состоянию UnityEngine.Random.
             double roll = random.NextDouble() * totalWeight;
             double cumulative = 0;
+            GameObject last = null;
 
             foreach (var entry in weightedPrefabs) {
+                if (entry.prefab == exclude) continue;
+                last = entry.prefab;
                 cumulative += entry.baseWeight + entry.lowSanityBias * sanityFactor;
                 if (roll <= cumulative)
                     return entry.prefab;
             }
 
-            return weightedPrefabs[^1].prefab; // на случай ошибок округления float
+            return last ?? weightedPrefabs[^1].prefab; // на случай ошибок округления float
         }
 
         // Заглушка до этапа 6. Сознательно не инжектю ISanityManager сейчас —

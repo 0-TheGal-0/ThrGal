@@ -35,15 +35,6 @@ public class PlayerController : MonoBehaviour {
     private float rotationVelocity;
     private bool isGrounded;
     private Vector3 lastMoveDirection = Vector3.forward;
-
-    // DI: сюда VContainer подставит готовый GameManager при старте сцены.
-    // Метод может называться как угодно — важен только атрибут [Inject].
-    //
-    // ВАЖНО про порядок вызова: VContainer вызывает Construct() из Awake() самого
-    // GameLifetimeScope, а не до вашего собственного Awake(). Гарантии, что Construct()
-    // отработает РАНЬШЕ вашего Awake(), нет — это зависит от Script Execution Order.
-    // Поэтому НЕ полагайтесь на _gameManager внутри своего Awake()/OnEnable() —
-    // используйте его начиная со Start() или позже, там он уже гарантированно готов.
     private GameManager _gameManager;
 
     [Inject]
@@ -55,15 +46,10 @@ public class PlayerController : MonoBehaviour {
     private void Awake() {
         controller = GetComponent<CharacterController>();
         controls = new PlayerControls();
-
         controls.Player.Move.performed += ctx => moveInput = ctx.ReadValue<Vector2>();
         controls.Player.Move.canceled += ctx => moveInput = Vector2.zero;
-
         controls.Player.Sprint.performed += ctx => sprintHeld = true;
         controls.Player.Sprint.canceled += ctx => sprintHeld = false;
-
-        // используем started, чтобы прыжок фиксировался даже если Update не успеет
-        // словить очень короткий performed-кадр
         controls.Player.Jump.started += ctx => jumpPressed = true;
 
         if (cameraTransform == null && Camera.main != null)
@@ -101,13 +87,6 @@ public class PlayerController : MonoBehaviour {
         } else {
             currentSpeed = Mathf.Lerp(currentSpeed, targetSpeed * inputDir.magnitude, acceleration * Time.deltaTime);
         }
-
-        // направление движения строится относительно поворота камеры (как в Genshin Impact —
-        // персонаж всегда бежит в сторону экрана, а не в локальных координатах).
-        // ВАЖНО: считаем targetAngle и lastMoveDirection ТОЛЬКО когда есть реальный ввод.
-        // Если делать это всегда, то при inputDir == (0,0) Atan2(0,0) вернёт 0, и направление
-        // "схлопнется" в чистый форвард камеры — из-за этого персонаж после остановки
-        // чуть проезжает вперёд по камере, а не туда, куда реально бежал.
         if (hasInput) {
             float camYaw = cameraTransform != null ? cameraTransform.eulerAngles.y : 0f;
             float targetAngle = Mathf.Atan2(inputDir.x, inputDir.z) * Mathf.Rad2Deg + camYaw;

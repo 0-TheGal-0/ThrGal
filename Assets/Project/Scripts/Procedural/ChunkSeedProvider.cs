@@ -11,15 +11,26 @@ namespace Game.Procedural {
             _globalSeed = globalSeed;
         }
 
-        public System.Random GetRandom(Vector2Int coord) {
-            // Намеренно не Vector2Int.GetHashCode() — он не документирован как стабильный
-            // между версиями/платформами Unity, а нам нужна гарантированная воспроизводимость.
+        // Финализатор SplitMix64: превращает "почти одинаковые" входы в далёкие друг от друга числа.
+        private static ulong Mix(ulong z) {
             unchecked {
-                int hash = 17;
-                hash = hash * 31 + _globalSeed;
-                hash = hash * 31 + coord.x;
-                hash = hash * 31 + coord.y;
-                return new System.Random(hash);
+                z += 0x9E3779B97F4A7C15UL;
+                z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9UL;
+                z = (z ^ (z >> 27)) * 0x94D049BB133111EBUL;
+                return z ^ (z >> 31);
+            }
+        }
+
+        // visitCount — сколько раз этот чанк уже регенерировался. Один и тот же
+        // (globalSeed, coord, visitCount) всегда даёт один и тот же результат,
+        // но следующий visitCount даёт другой.
+        public System.Random GetRandom(Vector2Int coord, int visitCount) {
+            unchecked {
+                ulong h = Mix((uint)_globalSeed);
+                h = Mix(h ^ (uint)coord.x);
+                h = Mix(h ^ (uint)coord.y);
+                h = Mix(h ^ (uint)visitCount);
+                return new System.Random((int)(h ^ (h >> 32)));
             }
         }
     }
