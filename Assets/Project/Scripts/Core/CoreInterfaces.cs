@@ -89,6 +89,16 @@ public interface IChunkManager {
         void RegisterAnchor(Vector2Int coord);
         void UnregisterAnchor(Vector2Int coord);
     }
+    // Реализуется в Procedural.asmdef (BiomeMap). Core знает только id биома, а не его содержимое:
+    // BiomeDefinition ссылается на префабы, а Core не должен знать про игровой контент.
+    public interface IBiomeMap {
+        // false, если в этом чанке нет биома (id 0) или карта не запечена.
+        bool TryGetBiomeId(Vector2Int coord, out int biomeId);
+        // Доля площади чанка под дорогой, 0..1.
+        float GetRoadCoverage(Vector2Int coord);
+        // true, если в этой точке мира на маске дорога.
+        bool IsRoadAt(Vector3 worldPosition);
+    }
 
 
 }

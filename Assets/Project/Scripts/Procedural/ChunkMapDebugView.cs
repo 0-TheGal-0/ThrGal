@@ -4,8 +4,11 @@ namespace Game.Procedural {
     // Чисто отладочный компонент: рисует в Scene View запечённые данные чанков.
     // В DI не регистрируется и ничего не инжектит.
     public class ChunkMapDebugView : MonoBehaviour {
+        public enum ColorMode { Slope, Biome }
+
         [SerializeField] private ChunkMapData chunkMap;
         [SerializeField] private bool draw = true;
+        [SerializeField] private ColorMode colorMode = ColorMode.Biome;
 
         [Tooltip("Вокруг кого рисовать. Если не задано — вокруг этого объекта.")]
         [SerializeField] private Transform center;
@@ -15,6 +18,18 @@ namespace Game.Procedural {
 
         [Tooltip("При каком уклоне (градусы) чанк становится полностью красным.")]
         [SerializeField] private float slopeForRed = 40f;
+
+        [Tooltip("Цвета биомов по id: [0] = нет биома, [1] = biome1, [2] = biome2, [3] = biome3.")]
+        [SerializeField]
+        private Color[] biomeColors = {
+            Color.gray,
+            new Color(0.27f, 0.55f, 1f),   // biome1
+            new Color(1f, 0.67f, 0.16f),   // biome2
+            new Color(0.75f, 0.27f, 0.78f) // biome3
+        };
+
+        [Tooltip("Дорога сильнее подмешивает белый, чем больше доля дороги в чанке.")]
+        [SerializeField] private bool showRoads = true;
 
         private void OnDrawGizmos() {
             if (!draw || chunkMap == null || !chunkMap.IsBaked) return;
@@ -29,13 +44,10 @@ namespace Game.Procedural {
                 for (int z = -radiusInChunks; z <= radiusInChunks; z++) {
                     var coord = new Vector2Int(centerCoord.x + x, centerCoord.y + z);
                     if (!chunkMap.TryGetHeightRange(coord, out float minY, out float maxY)) continue;
-                    chunkMap.TryGetMaxSlope(coord, out float slope);
 
-                    // Зелёный (ровно) → жёлтый → красный (>= slopeForRed).
-                    float t = Mathf.Clamp01(slope / slopeForRed);
-                    Color color = t < 0.5f
-                        ? Color.Lerp(Color.green, Color.yellow, t * 2f)
-                        : Color.Lerp(Color.yellow, Color.red, (t - 0.5f) * 2f);
+                    Color color = colorMode == ColorMode.Biome
+                        ? GetBiomeColor(coord)
+                        : GetSlopeColor(coord);
 
                     // Бокс от minY до maxY — ровно та рамка, которую позже получит проверка видимости.
                     float height = Mathf.Max(maxY - minY, 0.2f);
@@ -48,6 +60,26 @@ namespace Game.Procedural {
                     Gizmos.DrawCube(boxCenter, boxSize);
                 }
             }
+        }
+
+        private Color GetSlopeColor(Vector2Int coord) {
+            chunkMap.TryGetMaxSlope(coord, out float slope);
+            // Зелёный (ровно) → жёлтый → красный (>= slopeForRed).
+            float t = Mathf.Clamp01(slope / slopeForRed);
+            return t < 0.5f
+                ? Color.Lerp(Color.green, Color.yellow, t * 2f)
+                : Color.Lerp(Color.yellow, Color.red, (t - 0.5f) * 2f);
+        }
+
+        private Color GetBiomeColor(Vector2Int coord) {
+            if (!chunkMap.TryGetBiomeId(coord, out int id)) return Color.black; // маска не запечена
+            Color color = biomeColors != null && id < biomeColors.Length ? biomeColors[id] : Color.gray;
+
+            if (showRoads && chunkMap.TryGetRoadCoverage(coord, out float road) && road > 0f) {
+                // Даже узкая дорога (5% чанка) должна быть заметна, поэтому усиливаем долю.
+                color = Color.Lerp(color, Color.white, Mathf.Clamp01(road * 4f));
+            }
+            return color;
         }
     }
 }

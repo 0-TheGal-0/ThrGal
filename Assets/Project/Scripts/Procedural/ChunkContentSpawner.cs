@@ -1,51 +1,40 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine;
 using VContainer;
 using Game.Core;
 
 namespace Game.Procedural {
-    [Serializable]
-    public class WeightedContentEntry {
-        public GameObject prefab;
-        [Tooltip("Базовый вес при нормальном Sanity.")]
-        public float baseWeight = 1f;
-
-        [Tooltip("Насколько сильнее выбирать этот вариант при низком Sanity " +
-                 "(0 = не зависит от Sanity, больше 0 = 'неправильные' варианты вроде " +
-                 "дерева с лицом или дома без двери). Пока не подключено — ISanityManager " +
-                 "появится на этапе 6, см. GetSanityFactor().")]
-        public float lowSanityBias = 0f;
-    }
-
     // Регенерирует Layer 1 (Structures) чанка при переходе в Dark. Layer 0 (Skeleton —
-    // рельеф, дороги) сюда не входит: он генерируется один раз на весь мир и не пересоздаётся,
-    // это отдельная система вне ChunkContentSpawner.
+    // рельеф, дороги) сюда не входит: он статичен и запечён в ChunkMapData.
     public class ChunkContentSpawner : MonoBehaviour {
-        [SerializeField] private WeightedContentEntry[] weightedPrefabs;
+        [Header("Размещение")]
+        [Tooltip("Отступ от границы чанка (м), чтобы объект не оказался на стыке с соседним чанком.")]
+        [SerializeField, Min(0f)] private float edgeMargin = 1f;
+
+        [Tooltip("Сколько раз пробовать найти подходящую точку для одного объекта, прежде чем пропустить его.")]
+        [SerializeField, Min(1)] private int maxPlacementAttempts = 8;
 
         private IChunkManager _chunkManager;
         private IChunkAnchorRegistry _anchorRegistry;
         private ChunkSeedProvider _seedProvider;
+        private BiomeMap _biomeMap;
         private ChunkObjectPool _pool;
-        [Tooltip("Не выбирать тот же префаб, что стоял в чанке до этого. Без этого при трёх префабах " +
-         "около 40% регенераций выглядят как «ничего не изменилось».")]
-        [SerializeField] private bool avoidRepeatingPrevious = true;
+        private Terrain _terrain;
 
         // Сколько раз чанк уже регенерировался. Пока живёт только в памяти;
         // на этапе 7 это значение нужно будет сохранять вместе с остальным состоянием мира.
         private readonly Dictionary<Vector2Int, int> _visitCounts = new();
 
-        // Что сейчас заспавнено в чанке — нужно и чтобы вернуть старый инстанс в пул
-        // перед подменой, и чтобы знать, из какого префаба он был создан (для Release).
-        private readonly Dictionary<Vector2Int, (GameObject instance, GameObject prefab)> _spawnedContent = new();
+        // Что сейчас стоит в чанке: инстанс + префаб, из которого он создан (для Release в пул).
+        private readonly Dictionary<Vector2Int, List<(GameObject instance, GameObject prefab)>> _spawnedContent = new();
 
         [Inject]
         public void Construct(IChunkManager chunkManager, IChunkAnchorRegistry anchorRegistry,
-            ChunkSeedProvider seedProvider) {
+            ChunkSeedProvider seedProvider, BiomeMap biomeMap) {
             _chunkManager = chunkManager;
             _anchorRegistry = anchorRegistry;
             _seedProvider = seedProvider;
+            _biomeMap = biomeMap;
         }
 
         private void Awake() {
@@ -63,68 +52,128 @@ namespace Game.Procedural {
         private void HandleChunkStateChanged(Vector2Int coord, ChunkState newState) {
             if (newState != ChunkState.Dark) return;
 
-            // Сюжетные чанки регенерации не подлежат — тело девочки/ключевые предметы
-            // не должны исчезнуть или замениться placeholder'ом.
+            // Сюжетные чанки регенерации не подлежат.
             if (_anchorRegistry.IsAnchor(coord)) return;
 
             RegenerateChunk(coord);
         }
 
         private void RegenerateChunk(Vector2Int coord) {
-            if (weightedPrefabs == null || weightedPrefabs.Length == 0) {
-                Debug.LogWarning("ChunkContentSpawner: пул weightedPrefabs пуст, регенерировать нечем.");
-                return;
-            }
-
             _visitCounts.TryGetValue(coord, out int visit);
             _visitCounts[coord] = visit + 1;
 
-            GameObject previousPrefab = null;
-            if (_spawnedContent.TryGetValue(coord, out var old)) {
-                previousPrefab = old.prefab;
-                if (old.instance != null)
-                    _pool.Release(old.prefab, old.instance);
+            ReleaseChunkContent(coord);
+
+            if (_terrain == null) _terrain = Terrain.activeTerrain;
+            if (_terrain == null) {
+                Debug.LogWarning("ChunkContentSpawner: на сцене нет активного Terrain, размещать не на чем.");
+                return;
             }
 
+            if (!_biomeMap.TryGetDefinition(coord, out var biome)) {
+                Debug.LogWarning($"ChunkContentSpawner: у чанка {coord} нет биома или для его id нет BiomeDefinition.");
+                return;
+            }
+            if (biome.Entries.Count == 0) return;
+
+            // Все случайные числа этого чанка идут из одного генератора в фиксированном порядке:
+            // (seed, coord, visit) -> один и тот же результат.
             var random = _seedProvider.GetRandom(coord, visit);
-            var chosen = PickWeighted(random, avoidRepeatingPrevious ? previousPrefab : null);
+            int count = random.Next(biome.MinObjectsPerChunk, biome.MaxObjectsPerChunk + 1);
+            if (count <= 0) return;
 
+            if (!_spawnedContent.TryGetValue(coord, out var list))
+                _spawnedContent[coord] = list = new List<(GameObject, GameObject)>();
 
-            Vector3 worldCenter = _chunkManager.ChunkToWorldCenter(coord);
-            var instance = _pool.Get(chosen, worldCenter, Quaternion.identity, transform);
-            _spawnedContent[coord] = (instance, chosen);
+            for (int i = 0; i < count; i++)
+                TryPlaceOne(coord, biome, random, list);
         }
 
-        private GameObject PickWeighted(System.Random random, GameObject exclude) {
-            float sanityFactor = GetSanityFactor();
-
-            float totalWeight = 0f;
-            foreach (var entry in weightedPrefabs) {
-                if (entry.prefab == exclude) continue;
-                totalWeight += entry.baseWeight + entry.lowSanityBias * sanityFactor;
+        private void ReleaseChunkContent(Vector2Int coord) {
+            if (!_spawnedContent.TryGetValue(coord, out var list)) return;
+            foreach (var (instance, prefab) in list) {
+                if (instance != null) _pool.Release(prefab, instance);
             }
-            // Исключать нечего (один вариант в пуле) — выбираем как обычно.
-            if (totalWeight <= 0f && exclude != null)
-                return PickWeighted(random, null);
+            list.Clear();
+        }
 
-            double roll = random.NextDouble() * totalWeight;
+        private void TryPlaceOne(Vector2Int coord, BiomeDefinition biome, System.Random random,
+            List<(GameObject instance, GameObject prefab)> list) {
+            Vector3 center = _chunkManager.ChunkToWorldCenter(coord);
+            float half = Mathf.Max(0f, _biomeMap.ChunkSize * 0.5f - edgeMargin);
+
+            for (int attempt = 0; attempt < maxPlacementAttempts; attempt++) {
+                var entry = PickEntry(random, biome);
+                if (entry == null) return;
+
+                float x = center.x + (float)(random.NextDouble() * 2.0 - 1.0) * half;
+                float z = center.z + (float)(random.NextDouble() * 2.0 - 1.0) * half;
+
+                if (GetSlope(x, z) > entry.maxSlopeDegrees) continue;
+                if (IsNearRoad(x, z, entry.roadClearance)) continue;
+
+                float yaw = (float)(random.NextDouble() * 360.0);
+                float scale = Mathf.Lerp(entry.scaleRange.x, entry.scaleRange.y, (float)random.NextDouble());
+
+                var position = new Vector3(x, GetGroundY(x, z), z);
+                var instance = _pool.Get(entry.prefab, position, Quaternion.Euler(0f, yaw, 0f), transform);
+                // Из пула приходит инстанс с масштабом прошлого использования — задаём заново.
+                instance.transform.localScale = entry.prefab.transform.localScale * scale;
+                list.Add((instance, entry.prefab));
+                return;
+            }
+            // Подходящей точки не нашлось за maxPlacementAttempts попыток — объект пропускаем.
+        }
+
+        private BiomeObjectEntry PickEntry(System.Random random, BiomeDefinition biome) {
+            float sanity = GetSanityFactor();
+
+            double total = 0;
+            foreach (var e in biome.Entries) total += EntryWeight(e, sanity);
+            if (total <= 0) return null;
+
+            double roll = random.NextDouble() * total;
             double cumulative = 0;
-            GameObject last = null;
-
-            foreach (var entry in weightedPrefabs) {
-                if (entry.prefab == exclude) continue;
-                last = entry.prefab;
-                cumulative += entry.baseWeight + entry.lowSanityBias * sanityFactor;
-                if (roll <= cumulative)
-                    return entry.prefab;
+            BiomeObjectEntry last = null;
+            foreach (var e in biome.Entries) {
+                float w = EntryWeight(e, sanity);
+                if (w <= 0f) continue;
+                last = e;
+                cumulative += w;
+                if (roll <= cumulative) return e;
             }
+            return last; // на случай ошибок округления
+        }
 
-            return last ?? weightedPrefabs[^1].prefab; // на случай ошибок округления float
+        private static float EntryWeight(BiomeObjectEntry e, float sanityFactor) {
+            if (e == null || e.prefab == null) return 0f;
+            return Mathf.Max(0f, e.weight + e.lowSanityBias * sanityFactor);
+        }
+
+        private bool IsNearRoad(float x, float z, float clearance) {
+            if (_biomeMap.IsRoadAt(new Vector3(x, 0f, z))) return true;
+            if (clearance <= 0f) return false;
+            return _biomeMap.IsRoadAt(new Vector3(x + clearance, 0f, z))
+                || _biomeMap.IsRoadAt(new Vector3(x - clearance, 0f, z))
+                || _biomeMap.IsRoadAt(new Vector3(x, 0f, z + clearance))
+                || _biomeMap.IsRoadAt(new Vector3(x, 0f, z - clearance));
+        }
+
+        private float GetSlope(float x, float z) {
+            var data = _terrain.terrainData;
+            Vector3 pos = _terrain.GetPosition();
+            float nx = Mathf.Clamp01((x - pos.x) / data.size.x);
+            float nz = Mathf.Clamp01((z - pos.z) / data.size.z);
+            return data.GetSteepness(nx, nz);
+        }
+
+        // SampleHeight возвращает высоту относительно позиции террейна — добавляем её Y.
+        private float GetGroundY(float x, float z) {
+            return _terrain.SampleHeight(new Vector3(x, 0f, z)) + _terrain.GetPosition().y;
         }
 
         // Заглушка до этапа 6. Сознательно не инжектю ISanityManager сейчас —
-        // он ещё не зарегистрирован в LifetimeScope, а обязательная [Inject]-зависимость
-        // на незарегистрированный интерфейс уронит контейнер при старте сцены.
+        // он ещё не зарегистрирован в LifetimeScope.
         private float GetSanityFactor() => 0f;
     }
 }

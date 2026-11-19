@@ -23,6 +23,12 @@ namespace Game.Procedural {
         [SerializeField] private float[] maxY;
         [SerializeField] private float[] maxSlope;
         [SerializeField] private float[] centerY;
+        [SerializeField] private byte[] biomeId;
+        [SerializeField] private float[] roadCoverage; // доля площади чанка под дорогой, 0..1
+        [SerializeField] private Vector2 maskOriginXZ; // мировые X,Z левого нижнего угла маски
+        [SerializeField] private Vector2 maskSizeXZ;   // размер маски в метрах
+        [Tooltip("Маска: R = id биома (0 = нет), G = дорога (>=128). Верх картинки = +Z.")]
+        [SerializeField] private Texture2D biomeMask;
 
         public float ChunkSize => chunkSize;
         public Vector2Int OriginChunk => originChunk;
@@ -72,9 +78,123 @@ namespace Game.Procedural {
             y = 0f;
             return false;
         }
+        public bool HasBiomes =>
+    IsBaked && biomeId != null && biomeId.Length == widthChunks * heightChunks
+    && roadCoverage != null && roadCoverage.Length == widthChunks * heightChunks;
+
+        public bool TryGetBiomeId(Vector2Int coord, out int id) {
+            if (HasBiomes && TryGetIndex(coord, out int i)) {
+                id = biomeId[i];
+                return true;
+            }
+            id = 0;
+            return false;
+        }
+
+        public bool TryGetRoadCoverage(Vector2Int coord, out float coverage) {
+            if (HasBiomes && TryGetIndex(coord, out int i)) {
+                coverage = roadCoverage[i];
+                return true;
+            }
+            coverage = 0f;
+            return false;
+        }
+        // Точечная проверка дороги по маске (G >= 0.5). Нужна размещению объектов:
+        // roadCoverage говорит только «сколько дороги в чанке», а не «где именно».
+        public bool IsRoadAt(Vector3 world) {
+            if (!HasBiomes || biomeMask == null || maskSizeXZ.x <= 0f || maskSizeXZ.y <= 0f) return false;
+
+            float u = (world.x - maskOriginXZ.x) / maskSizeXZ.x;
+            float v = (world.z - maskOriginXZ.y) / maskSizeXZ.y;
+            if (u < 0f || u >= 1f || v < 0f || v >= 1f) return false;
+
+            int px = Mathf.Clamp((int)(u * biomeMask.width), 0, biomeMask.width - 1);
+            int py = Mathf.Clamp((int)(v * biomeMask.height), 0, biomeMask.height - 1);
+            return biomeMask.GetPixel(px, py).g >= 0.5f;
+        }
 
 #if UNITY_EDITOR
         [ContextMenu("Bake From Active Terrain")]
+        [ContextMenu("Bake Biome Mask")]
+        private void BakeBiomeMask() {
+            if (!IsBaked) {
+                Debug.LogError("ChunkMapData: сначала выполните Bake From Active Terrain.");
+                return;
+            }
+            if (biomeMask == null) {
+                Debug.LogError("ChunkMapData: не назначена biomeMask.");
+                return;
+            }
+            if (!biomeMask.isReadable) {
+                Debug.LogError("ChunkMapData: у текстуры маски включите Read/Write.");
+                return;
+            }
+            var terrain = Terrain.activeTerrain;
+            if (terrain == null) {
+                Debug.LogError("ChunkMapData: на открытой сцене нет активного Terrain.");
+                return;
+            }
+
+            Vector3 terrainPos = terrain.GetPosition();
+            Vector3 size = terrain.terrainData.size;
+            int texW = biomeMask.width;
+            int texH = biomeMask.height;
+            Color32[] pixels = biomeMask.GetPixels32(); // индекс = y * texW + x, строка 0 = низ (-Z)
+
+            int count = widthChunks * heightChunks;
+            biomeId = new byte[count];
+            roadCoverage = new float[count];
+
+            var biomeCounts = new int[256];
+            var totalPerBiome = new int[256];
+            int chunksWithRoad = 0;
+
+            for (int cz = 0; cz < heightChunks; cz++) {
+                for (int cx = 0; cx < widthChunks; cx++) {
+                    int index = cz * widthChunks + cx;
+
+                    // Границы чанка в локальных координатах террейна -> пиксели маски.
+                    float lx0 = (originChunk.x + cx) * chunkSize - terrainPos.x;
+                    float lz0 = (originChunk.y + cz) * chunkSize - terrainPos.z;
+                    int px0 = Mathf.Clamp(Mathf.FloorToInt(lx0 / size.x * texW), 0, texW);
+                    int px1 = Mathf.Clamp(Mathf.FloorToInt((lx0 + chunkSize) / size.x * texW), 0, texW);
+                    int py0 = Mathf.Clamp(Mathf.FloorToInt(lz0 / size.z * texH), 0, texH);
+                    int py1 = Mathf.Clamp(Mathf.FloorToInt((lz0 + chunkSize) / size.z * texH), 0, texH);
+
+                    System.Array.Clear(biomeCounts, 0, biomeCounts.Length);
+                    int total = 0, road = 0;
+                    for (int py = py0; py < py1; py++) {
+                        for (int px = px0; px < px1; px++) {
+                            Color32 c = pixels[py * texW + px];
+                            biomeCounts[c.r]++;
+                            if (c.g >= 128) road++;
+                            total++;
+                        }
+                    }
+                    if (total == 0) continue; // чанк вне маски: биом 0, дороги нет
+
+                    // Биом чанка = самый частый id среди его пикселей (при равенстве - меньший id).
+                    int best = 0;
+                    for (int id = 1; id < 256; id++)
+                        if (biomeCounts[id] > biomeCounts[best]) best = id;
+                    biomeId[index] = (byte)best;
+                    totalPerBiome[best]++;
+
+                    roadCoverage[index] = road / (float)total;
+                    if (roadCoverage[index] > 0f) chunksWithRoad++;
+                }
+            }
+            maskOriginXZ = new Vector2(terrainPos.x, terrainPos.z);
+            maskSizeXZ = new Vector2(size.x, size.z);
+            EditorUtility.SetDirty(this);
+            AssetDatabase.SaveAssets();
+
+            string stats = "";
+            for (int id = 0; id < 256; id++)
+                if (totalPerBiome[id] > 0) stats += $" биом {id}: {totalPerBiome[id]};";
+            Debug.Log($"ChunkMapData: маска запечена, чанков с дорогой: {chunksWithRoad}.{stats}");
+        }
+
         private void BakeFromActiveTerrain() {
             var terrain = Terrain.activeTerrain;
             if (terrain == null) {
@@ -161,6 +281,8 @@ namespace Game.Procedural {
                             slope = Mathf.Max(slope, data.GetSteepness(nx, nz));
                         }
                     }
+
+
                     maxSlope[index] = slope;
 
                     globalMin = Mathf.Min(globalMin, minY[index]);
@@ -175,6 +297,7 @@ namespace Game.Procedural {
             Debug.Log($"ChunkMapData: запечено {widthChunks}x{heightChunks} чанков, origin = {originChunk}. " +
                       $"Высота: от {globalMin:F1} до {globalMax:F1} м. Максимальный уклон: {globalSlope:F1}°."+$"Центр вне [minY, maxY]: {centerOutOfRange} (должно быть 0)");
         }
+
 #endif
     }
 }

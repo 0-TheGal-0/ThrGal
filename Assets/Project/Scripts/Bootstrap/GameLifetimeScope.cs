@@ -76,7 +76,7 @@ namespace Game.Bootstrap {
     .WithParameter("globalSeed", worldSeed);
 
             builder.RegisterComponentInHierarchy<ChunkAnchorRegistry>().As<IChunkAnchorRegistry>();
-
+            builder.RegisterComponentInHierarchy<BiomeMap>().AsSelf().As<IBiomeMap>();
         }
     }
 }   
