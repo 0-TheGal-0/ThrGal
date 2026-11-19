@@ -33,10 +33,7 @@ namespace Game.AI {
         [SerializeField] private float baseAgentSpeed = 3.5f;
         [Tooltip("При Fatigue = 1 скорость падает на эту долю от базовой.")]
         [SerializeField, Range(0f, 1f)] private float fatigueSpeedPenalty = 0.6f;
-        [Tooltip("После этого порога Fatigue компаньон иногда отказывается идти вовсе (стоит на месте).")]
-        [SerializeField, Range(0f, 1f)] private float refusalFatigueThreshold = 0.85f;
-        [SerializeField, Range(0f, 1f)] private float refusalChancePerCheck = 0.3f;
-        [SerializeField] private float refusalCheckInterval = 2f;
+        // refusalFatigueThreshold / refusalChancePerCheck / refusalCheckInterval — удалены
 
         [Header("Lost")]
         [Tooltip("Радиус поиска Dark-чанка вокруг текущей позиции компаньона при срабатывании Lost.")]
@@ -111,13 +108,7 @@ namespace Game.AI {
         private void ApplyFatigueToAgent() {
             float fatigue = _relationshipManager.Fatigue;
             _agent.speed = baseAgentSpeed * (1f - fatigue * fatigueSpeedPenalty);
-
-            _refusalCheckTimer += Time.deltaTime;
-            if (_refusalCheckTimer >= refusalCheckInterval) {
-                _refusalCheckTimer = 0f;
-                _isRefusingThisTick = fatigue >= refusalFatigueThreshold
-                                       && UnityEngine.Random.value < refusalChancePerCheck;
-            }
+            // блок с _refusalCheckTimer / _isRefusingThisTick — удалён целиком
         }
 
         private void TickFollow(float distanceToPlayer) {
@@ -127,16 +118,12 @@ namespace Game.AI {
                 return;
             }
 
-            if (_isRefusingThisTick) {
-                _agent.ResetPath(); // "отказ идти" — Fatigue слишком высокая
-                return;
-            }
-
             if (distanceToPlayer > followDistance) {
                 _agent.SetDestination(_player.transform.position);
             } else {
                 _agent.ResetPath();
             }
+            // проверка _isRefusingThisTick — удалена
         }
 
         private void TickReturnToFire() {
@@ -148,17 +135,8 @@ namespace Game.AI {
         }
 
         private void TickWaiting(float distanceToPlayer) {
-            _waitingTimer += Time.deltaTime;
-
-            bool minTimeElapsed = _waitingTimer >= _waitingDurationTarget;
-            bool playerCameBack = distanceToPlayer <= resumeFollowDistance;
-
-            // Возвращаемся к Follow, только если оба условия выполнены — не просто по таймеру
-            // (иначе компаньон уйдёт от костра, даже если героиня всё ещё далеко) и не просто
-            // по приближению игрока (иначе не будет того самого "минимального отдыха").
-            if (minTimeElapsed && playerCameBack) {
-                _state = CompanionState.Follow;
-            }
+            // Автоперехода больше нет — девочка стоит у костра, пока Follow не включат
+            // вручную через контекстное меню компонента (см. ForceFollow ниже).
         }
 
         private void HandleLostTriggered() {
@@ -182,10 +160,10 @@ namespace Game.AI {
         }
 
         private void HandleRecoveredTriggered() {
-            if (_state != CompanionState.Lost) return; // защита от гонки состояний
-            _state = fireTransform != null ? CompanionState.ReturnToFire : CompanionState.Follow;
-            if (fireTransform != null)
-                _agent.SetDestination(fireTransform.position);
+            if (_state != CompanionState.Lost) return;
+            // Раньше здесь был автопереход в ReturnToFire/Follow. Теперь просто "приходит в себя"
+            // и стоит на месте — дальше управляешь вручную через ForceFollow.
+            _state = CompanionState.Waiting;
         }
 
         private bool TryFindNearbyDarkChunk(out Vector3 worldPosition) {
@@ -206,6 +184,16 @@ namespace Game.AI {
 
             worldPosition = default;
             return false;
+        }
+        // Доступно через кнопку ⋮ (три точки) на компоненте CompanionController в инспекторе
+        // во время Play Mode. Временный ручной контроль над Follow, пока не спроектирована
+        // логика автовозврата (анимации, реакция на приближение игрока и т.д. — отдельная задача).
+        [ContextMenu("Force Follow")]
+        private void ForceFollow() {
+            if (_state == CompanionState.Dead) return;
+            _state = CompanionState.Follow;
+            _agent.enabled = true;
+            _agent.ResetPath();
         }
     }
 }

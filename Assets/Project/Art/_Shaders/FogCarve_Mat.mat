@@ -25,8 +25,11 @@ Material:
     m_TexEnvs: []
     m_Ints: []
     m_Floats:
-    - _FogClearRadiusPad: 2.21
-    - _FogDensity: 0.15
+    - _FogClearRadiusPad: 10
+    - _FogOpacity: 1
+    - _MaxLightRevealDistance: 30
+    - _RevealDistanceMultiplier: 1.1
+    - _RevealTransition: 5
     m_Colors:
     - _FogColor: {r: 0.04, g: 0.046999976, b: 0.07799999, a: 1}
   m_BuildTextureStacks: []

@@ -13,34 +13,34 @@ namespace Game.Gameplay {
         [SerializeField] private float minVignetteIntensity = 0.15f;
         [SerializeField] private float maxVignetteIntensity = 0.55f;
 
-        private IRelationshipManager _relationshipManager;
-        private Vignette _vignette;
+        //private IRelationshipManager _relationshipManager;
+        //private Vignette _vignette;
 
-        [Inject]
-        public void Construct(IRelationshipManager relationshipManager) {
-            _relationshipManager = relationshipManager;
-        }
+        //[Inject]
+        //public void Construct(IRelationshipManager relationshipManager) {
+        //    _relationshipManager = relationshipManager;
+        //}
 
-        private void Start() {
-            if (postProcessVolume == null || postProcessVolume.profile == null) {
-                Debug.LogWarning("PlayerFatigueFeedback: Volume/Profile не назначен, визуальный дебафф не будет работать.");
-                return;
-            }
-            postProcessVolume.profile.TryGet(out _vignette);
-            ApplyFatigue(_relationshipManager.Fatigue);
-        }
+        //private void Start() {
+        //    if (postProcessVolume == null || postProcessVolume.profile == null) {
+        //        Debug.LogWarning("PlayerFatigueFeedback: Volume/Profile не назначен, визуальный дебафф не будет работать.");
+        //        return;
+        //    }
+        //    postProcessVolume.profile.TryGet(out _vignette);
+        //    ApplyFatigue(_relationshipManager.Fatigue);
+        //}
 
-        private void OnEnable() {
-            _relationshipManager.OnFatigueChanged += ApplyFatigue;
-        }
+        //private void OnEnable() {
+        //    _relationshipManager.OnFatigueChanged += ApplyFatigue;
+        //}
 
-        private void OnDisable() {
-            _relationshipManager.OnFatigueChanged -= ApplyFatigue;
-        }
+        //private void OnDisable() {
+        //    _relationshipManager.OnFatigueChanged -= ApplyFatigue;
+        //}
 
-        private void ApplyFatigue(float fatigue) {
-            if (_vignette == null) return;
-            _vignette.intensity.Override(Mathf.Lerp(minVignetteIntensity, maxVignetteIntensity, fatigue));
-        }
+        //private void ApplyFatigue(float fatigue) {
+        //    if (_vignette == null) return;
+        //    _vignette.intensity.Override(Mathf.Lerp(minVignetteIntensity, maxVignetteIntensity, fatigue));
+        //}
     }
 }

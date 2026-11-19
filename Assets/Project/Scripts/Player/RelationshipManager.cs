@@ -13,17 +13,18 @@ namespace Game.Gameplay {
         [SerializeField, Range(0f, 1f)] private float fatigue = 0f;
 
         [Header("Fatigue rate")]
+        [SerializeField] private bool fatigueAccumulationEnabled = false; // временно выключено на тест-проходе
         [SerializeField] private float fatigueGrowthPerSecond = 0.02f;
         [SerializeField] private float fatigueRecoveryPerSecond = 0.08f;
 
         [Header("Lost/Dead — ЗАВЫШЕНО для тестирования, снизить на баланс-проходе")]
         [SerializeField] private float checkInterval = 5f;
         [SerializeField, Range(0f, 1f)] private float trustThresholdForLost = 0.4f;
-        [SerializeField, Range(0f, 1f)] private float fatigueThresholdForLost = 0.6f;
         [SerializeField] private float distanceThresholdForLost = 12f;
-        [SerializeField, Range(0f, 1f)] private float lostChancePerCheck = 0.5f;   // реалистично будет ~0.05
-        [SerializeField, Range(0f, 1f)] private float deathChancePerCheck = 0.2f;  // реалистично будет ~0.02
+        [SerializeField, Range(0f, 1f)] private float lostChancePerCheck = 0.5f;
+        [SerializeField, Range(0f, 1f)] private float deathChancePerCheck = 0.2f;
         [SerializeField, Range(0f, 1f)] private float recoveryChancePerCheck = 0.3f;
+        // fatigueThresholdForLost — удалено, Lost больше не зависит от Fatigue
 
         private bool _isCompanionLost;
         private bool _isCompanionAtFire;
@@ -55,10 +56,10 @@ namespace Game.Gameplay {
         }
 
         private void Update() {
-            TickFatigue();
+            Debug.Log(_isCompanionLost);
+            if (fatigueAccumulationEnabled) TickFatigue();
             TickLostDeathCheck();
         }
-
         private void TickFatigue() {
             // Пока компаньон Lost или Dead — Fatigue не тикаем: там уже другая логика/конец истории,
             // не хотим, чтобы значение продолжало расти в фоне и путало отладку.
@@ -76,7 +77,6 @@ namespace Game.Gameplay {
 
             if (!_isCompanionLost) {
                 bool conditionsMet = trust < trustThresholdForLost
-                                      && fatigue > fatigueThresholdForLost
                                       && _distanceToPlayer > distanceThresholdForLost;
 
                 if (conditionsMet && Roll(lostChancePerCheck)) {
@@ -86,7 +86,6 @@ namespace Game.Gameplay {
                 return;
             }
 
-            // Уже Lost — на каждой проверке либо гибель, либо шанс найтись самой.
             if (Roll(deathChancePerCheck)) {
                 OnCompanionDeathTriggered?.Invoke();
             } else if (Roll(recoveryChancePerCheck)) {
