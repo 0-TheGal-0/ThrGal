@@ -17,6 +17,12 @@ namespace Game.Procedural {
                  "(и стать кандидатом на регенерацию). Даёт игроку 'окно', чтобы вернуться " +
                  "со светом и не потерять чанк.")]
         [SerializeField] private float fadeDuration = 3f;
+        [Header("Рельеф")]
+        [Tooltip("Запечённые данные рельефа. Если не назначено или не запечено — старое поведение (всё на y = 0).")]
+        [SerializeField] private ChunkMapData chunkMap;
+
+        [Tooltip("Запас по высоте над рельефом в проверке видимости — чтобы учесть деревья и дома на чанке.")]
+        [SerializeField] private float contentHeightMargin = 10f;
 
         private ILightRegistry _lightRegistry;
         private Camera _mainCamera;
@@ -33,6 +39,12 @@ namespace Game.Procedural {
 
         private void Start() {
             _mainCamera = Camera.main;
+
+            if (chunkMap == null || !chunkMap.IsBaked) {
+                Debug.LogWarning("ChunkManager: ChunkMapData не назначен или не запечён — работаю без рельефа (y = 0).");
+            } else if (!Mathf.Approximately(chunkMap.ChunkSize, chunkSize)) {
+                Debug.LogError($"ChunkManager: chunkSize ({chunkSize}) не совпадает с ChunkMapData ({chunkMap.ChunkSize}). Перезапеките.");
+            }
         }
 
         public Vector2Int WorldToChunkCoord(Vector3 worldPosition) {
@@ -42,7 +54,8 @@ namespace Game.Procedural {
         }
 
         public Vector3 ChunkToWorldCenter(Vector2Int coord) {
-            return new Vector3((coord.x + 0.5f) * chunkSize, 0f, (coord.y + 0.5f) * chunkSize);
+            float y = (chunkMap != null && chunkMap.TryGetCenterY(coord, out float groundY)) ? groundY : 0f;
+            return new Vector3((coord.x + 0.5f) * chunkSize, y, (coord.y + 0.5f) * chunkSize);
         }
 
         public ChunkState GetChunkState(Vector2Int coord) {
@@ -93,12 +106,15 @@ namespace Game.Procedural {
 
         private bool IsChunkLit(Vector2Int coord) {
             Vector3 chunkCenter = ChunkToWorldCenter(coord);
+            bool use3D = chunkMap != null && chunkMap.IsBaked;
 
             foreach (var handle in _lightRegistry.ActiveSources) {
                 if (handle.Source == null) continue;
 
-                Vector3 flatSourcePos = new Vector3(handle.Source.position.x, 0f, handle.Source.position.z);
-                if (Vector3.Distance(flatSourcePos, chunkCenter) <= handle.Radius)
+                Vector3 sourcePos = handle.Source.position;
+                if (!use3D) sourcePos.y = 0f; // без рельефа — как раньше, в плоскости XZ
+
+                if (Vector3.Distance(sourcePos, chunkCenter) <= handle.Radius)
                     return true;
             }
             return false;
@@ -108,7 +124,15 @@ namespace Game.Procedural {
             if (_mainCamera == null) return false;
 
             Vector3 center = ChunkToWorldCenter(coord);
-            var bounds = new Bounds(center, new Vector3(chunkSize, chunkSize, chunkSize));
+            Bounds bounds;
+            if (chunkMap != null && chunkMap.TryGetHeightRange(coord, out float minY, out float maxY)) {
+                float top = maxY + contentHeightMargin;
+                bounds = new Bounds(
+                    new Vector3(center.x, (minY + top) * 0.5f, center.z),
+                    new Vector3(chunkSize, top - minY, chunkSize));
+            } else {
+                bounds = new Bounds(center, new Vector3(chunkSize, chunkSize, chunkSize));
+            }
 
             var planes = GeometryUtility.CalculateFrustumPlanes(_mainCamera);
             return GeometryUtility.TestPlanesAABB(planes, bounds);
@@ -126,8 +150,8 @@ namespace Game.Procedural {
             if (!Application.isPlaying) return;
 
             foreach (var kvp in _chunkStates) {
-                Vector3 center = new Vector3(
-                    (kvp.Key.x + 0.5f) * chunkSize, 0.05f, (kvp.Key.y + 0.5f) * chunkSize);
+                float y = chunkMap != null && chunkMap.TryGetHeightRange(kvp.Key, out _, out float topY) ? topY + 0.05f : 0.05f;
+                Vector3 center = new Vector3((kvp.Key.x + 0.5f) * chunkSize, y, (kvp.Key.y + 0.5f) * chunkSize);
 
                 Gizmos.color = kvp.Value switch {
                     ChunkState.Lit => new Color(1f, 0.8f, 0.2f, 0.5f),
