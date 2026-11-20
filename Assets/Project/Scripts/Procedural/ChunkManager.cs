@@ -23,11 +23,19 @@ namespace Game.Procedural {
 
         [Tooltip("Запас по высоте над рельефом в проверке видимости — чтобы учесть деревья и дома на чанке.")]
         [SerializeField] private float contentHeightMargin = 10f;
+        [Tooltip("Обрабатывать все чанки мира по границам ChunkMapData (а не квадрат debugGridRadius). " +
+         "Если карта не запечена, сработает debugGridRadius.")]
+        [SerializeField] private bool useWorldBounds = true;
 
         private ILightRegistry _lightRegistry;
         private Camera _mainCamera;
+        private int _minX, _maxX, _minZ, _maxZ;
 
         private readonly Dictionary<Vector2Int, ChunkState> _chunkStates = new();
+        // Чанки, которые сейчас Lit или Fading: только они могут поменяться без участия света.
+        private readonly HashSet<Vector2Int> _activeChunks = new();
+        // Буфер кандидатов на этот кадр. Переиспользуем, чтобы не создавать мусор каждый кадр.
+        private readonly HashSet<Vector2Int> _candidates = new();
         private readonly Dictionary<Vector2Int, float> _fadeTimers = new();
 
         public event Action<Vector2Int, ChunkState> OnChunkStateChanged;
@@ -44,6 +52,15 @@ namespace Game.Procedural {
                 Debug.LogWarning("ChunkManager: ChunkMapData не назначен или не запечён — работаю без рельефа (y = 0).");
             } else if (!Mathf.Approximately(chunkMap.ChunkSize, chunkSize)) {
                 Debug.LogError($"ChunkManager: chunkSize ({chunkSize}) не совпадает с ChunkMapData ({chunkMap.ChunkSize}). Перезапеките.");
+            }
+            if (useWorldBounds && chunkMap != null && chunkMap.IsBaked) {
+                _minX = chunkMap.OriginChunk.x;
+                _minZ = chunkMap.OriginChunk.y;
+                _maxX = _minX + chunkMap.WidthChunks - 1;
+                _maxZ = _minZ + chunkMap.HeightChunks - 1;
+            } else {
+                _minX = _minZ = -debugGridRadius;
+                _maxX = _maxZ = debugGridRadius;
             }
         }
 
@@ -63,12 +80,27 @@ namespace Game.Procedural {
         }
 
         private void Update() {
-            for (int x = -debugGridRadius; x <= debugGridRadius; x++) {
-                for (int z = -debugGridRadius; z <= debugGridRadius; z++) {
-                    var coord = new Vector2Int(x, z);
-                    UpdateChunk(coord);
-                }
+            _candidates.Clear();
+
+            // 1. Всё, что уже Lit/Fading: нужно проверять, не погасло ли и не истёк ли таймер.
+            foreach (var coord in _activeChunks) _candidates.Add(coord);
+
+            // 2. Чанки в квадрате вокруг каждого источника: они могут стать Lit.
+            foreach (var handle in _lightRegistry.ActiveSources) {
+                if (handle.Source == null) continue;
+
+                Vector3 p = handle.Source.position;
+                int fromX = Mathf.Max(_minX, Mathf.FloorToInt((p.x - handle.Radius) / chunkSize));
+                int toX = Mathf.Min(_maxX, Mathf.FloorToInt((p.x + handle.Radius) / chunkSize));
+                int fromZ = Mathf.Max(_minZ, Mathf.FloorToInt((p.z - handle.Radius) / chunkSize));
+                int toZ = Mathf.Min(_maxZ, Mathf.FloorToInt((p.z + handle.Radius) / chunkSize));
+
+                for (int x = fromX; x <= toX; x++)
+                    for (int z = fromZ; z <= toZ; z++)
+                        _candidates.Add(new Vector2Int(x, z));
             }
+
+            foreach (var coord in _candidates) UpdateChunk(coord);
         }
 
         private void UpdateChunk(Vector2Int coord) {
@@ -143,6 +175,12 @@ namespace Game.Procedural {
             if (oldState == newState) return;
 
             _chunkStates[coord] = newState;
+
+            if (newState == ChunkState.Lit || newState == ChunkState.Fading)
+                _activeChunks.Add(coord);
+            else
+                _activeChunks.Remove(coord);
+
             OnChunkStateChanged?.Invoke(coord, newState);
         }
 

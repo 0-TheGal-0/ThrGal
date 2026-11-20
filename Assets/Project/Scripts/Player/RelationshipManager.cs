@@ -56,7 +56,6 @@ namespace Game.Gameplay {
         }
 
         private void Update() {
-            Debug.Log(_isCompanionLost);
             if (fatigueAccumulationEnabled) TickFatigue();
             TickLostDeathCheck();
         }

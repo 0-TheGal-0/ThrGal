@@ -13,6 +13,12 @@ namespace Game.Procedural {
 
         [Tooltip("Сколько раз пробовать найти подходящую точку для одного объекта, прежде чем пропустить его.")]
         [SerializeField, Min(1)] private int maxPlacementAttempts = 8;
+        [Header("Чистая зона")]
+        [Tooltip("Центр зоны без контента (костёр). Если не назначен, зона отключена.")]
+        [SerializeField] private Transform clearZoneCenter;
+
+        [Tooltip("Радиус зоны без контента, м. Объекты в неё не попадают ни при начальной генерации, ни при регенерации.")]
+        [SerializeField, Min(0f)] private float clearZoneRadius = 15f;
 
         private IChunkManager _chunkManager;
         private IChunkAnchorRegistry _anchorRegistry;
@@ -50,12 +56,52 @@ namespace Game.Procedural {
         }
 
         private void HandleChunkStateChanged(Vector2Int coord, ChunkState newState) {
-            if (newState != ChunkState.Dark) return;
-
-            // Сюжетные чанки регенерации не подлежат.
+            // Сюжетные чанки контент не получают и не меняют.
             if (_anchorRegistry.IsAnchor(coord)) return;
 
-            RegenerateChunk(coord);
+            switch (newState) {
+                case ChunkState.Lit:
+                    // Первое появление чанка: если мы его ещё не генерировали,
+                    // это начальная генерация (visit 0).
+                    if (!_visitCounts.ContainsKey(coord)) GenerateChunk(coord);
+                    break;
+
+                case ChunkState.Dark:
+                    // Регенерация. К этому моменту чанк обычно уже генерировался
+                    // при первом Lit, так что сид здесь будет visit >= 1.
+                    GenerateChunk(coord);
+                    break;
+            }
+        }
+
+        private void GenerateChunk(Vector2Int coord) {
+            // visit = номер этой генерации для чанка: 0 для начальной, 1 для первой регенерации и т.д.
+            _visitCounts.TryGetValue(coord, out int visit);
+            _visitCounts[coord] = visit + 1;
+
+            ReleaseChunkContent(coord);
+
+            if (_terrain == null) _terrain = Terrain.activeTerrain;
+            if (_terrain == null) {
+                Debug.LogWarning("ChunkContentSpawner: на сцене нет активного Terrain, размещать не на чем.");
+                return;
+            }
+
+            if (!_biomeMap.TryGetDefinition(coord, out var biome)) {
+                Debug.LogWarning($"ChunkContentSpawner: у чанка {coord} нет биома или для его id нет BiomeDefinition.");
+                return;
+            }
+            if (biome.Entries.Count == 0) return;
+
+            var random = _seedProvider.GetRandom(coord, visit);
+            int count = random.Next(biome.MinObjectsPerChunk, biome.MaxObjectsPerChunk + 1);
+            if (count <= 0) return;
+
+            if (!_spawnedContent.TryGetValue(coord, out var list))
+                _spawnedContent[coord] = list = new List<(GameObject, GameObject)>();
+
+            for (int i = 0; i < count; i++)
+                TryPlaceOne(coord, biome, random, list);
         }
 
         private void RegenerateChunk(Vector2Int coord) {
@@ -111,6 +157,7 @@ namespace Game.Procedural {
 
                 if (GetSlope(x, z) > entry.maxSlopeDegrees) continue;
                 if (IsNearRoad(x, z, entry.roadClearance)) continue;
+                if (IsInClearZone(x, z)) continue;          // <- новая строка
 
                 float yaw = (float)(random.NextDouble() * 360.0);
                 float scale = Mathf.Lerp(entry.scaleRange.x, entry.scaleRange.y, (float)random.NextDouble());
@@ -157,6 +204,13 @@ namespace Game.Procedural {
                 || _biomeMap.IsRoadAt(new Vector3(x - clearance, 0f, z))
                 || _biomeMap.IsRoadAt(new Vector3(x, 0f, z + clearance))
                 || _biomeMap.IsRoadAt(new Vector3(x, 0f, z - clearance));
+        }
+        private bool IsInClearZone(float x, float z) {
+            if (clearZoneCenter == null) return false;
+            Vector3 c = clearZoneCenter.position;
+            float dx = x - c.x;
+            float dz = z - c.z;
+            return dx * dx + dz * dz < clearZoneRadius * clearZoneRadius;
         }
 
         private float GetSlope(float x, float z) {
