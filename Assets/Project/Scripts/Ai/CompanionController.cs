@@ -11,14 +11,17 @@ namespace Game.AI {
         Waiting,
         Lost,
         Dead
-        // Explore, Resting — пока не нужны для текущих задач, добавим по мере необходимости.
+        // Explore, Resting — добавим, когда появится логика у костра и безопасные зоны.
     }
 
     [RequireComponent(typeof(NavMeshAgent))]
     public class CompanionController : MonoBehaviour, ICompanionController {
         [Header("Follow")]
         [SerializeField] private float followDistance = 3f;
-        [SerializeField] private float returnToFireThreshold = 12f;
+        [Tooltip("Порог отставания = радиус фонаря героини × этот множитель.")]
+        [SerializeField] private float returnToFireRadiusMultiplier = 1.5f;
+        [Tooltip("Порог, если свет героини не найден в реестре.")]
+        [SerializeField] private float fallbackReturnToFireThreshold = 12f;
         [SerializeField] private Transform fireTransform;
 
         [Header("Waiting")]
@@ -31,24 +34,28 @@ namespace Game.AI {
 
         [Header("Fatigue effect")]
         [SerializeField] private float baseAgentSpeed = 3.5f;
-        [Tooltip("При Fatigue = 1 скорость падает на эту долю от базовой.")]
+        [Tooltip("При Fatigue = 100 скорость падает на эту долю от базовой.")]
         [SerializeField, Range(0f, 1f)] private float fatigueSpeedPenalty = 0.6f;
-        // refusalFatigueThreshold / refusalChancePerCheck / refusalCheckInterval — удалены
 
         [Header("Lost")]
         [Tooltip("Радиус поиска Dark-чанка вокруг текущей позиции компаньона при срабатывании Lost.")]
         [SerializeField] private int lostSearchRadiusInChunks = 5;
 
+        [Header("Debug (временное)")]
+        [SerializeField] private bool logTransitions = true;
+
         private NavMeshAgent _agent;
         private PlayerController _player;
         private IRelationshipManager _relationshipManager;
         private IChunkManager _chunkManager;
+        private ILightRegistry _lightRegistry;
 
         private CompanionState _state = CompanionState.Follow;
         private float _waitingTimer;
         private float _waitingDurationTarget;
-        private float _refusalCheckTimer;
-        private bool _isRefusingThisTick;
+        private float _lostTimer;
+        private float _lostDuration;
+        private LightSourceHandle _playerLight;
 
         public Vector3 Position => transform.position;
         public bool IsAtFire => _state == CompanionState.Waiting;
@@ -58,33 +65,46 @@ namespace Game.AI {
 
         [Inject]
         public void Construct(PlayerController player, IRelationshipManager relationshipManager,
-            IChunkManager chunkManager) {
+            IChunkManager chunkManager, ILightRegistry lightRegistry) {
             _player = player;
             _relationshipManager = relationshipManager;
             _chunkManager = chunkManager;
+            _lightRegistry = lightRegistry;
         }
 
         private void Awake() {
             _agent = GetComponent<NavMeshAgent>();
         }
 
-        private void OnEnable() {
-            _relationshipManager.OnCompanionLostTriggered += HandleLostTriggered;
-            _relationshipManager.OnCompanionDeathTriggered += HandleDeathTriggered;
-            _relationshipManager.OnCompanionRecoveredTriggered += HandleRecoveredTriggered;
+        // Порог отставания: радиус фонаря героини + 50%. Читаем живое значение из реестра,
+        // поэтому апгрейды света (LightSource.SetRadius) подхватываются сами.
+        private float ReturnToFireThreshold {
+            get {
+                if (_playerLight != null && _playerLight.Source == null) _playerLight = null;
+                if (_playerLight == null) _playerLight = FindPlayerLight();
+                return _playerLight != null
+                    ? _playerLight.Radius * returnToFireRadiusMultiplier
+                    : fallbackReturnToFireThreshold;
+            }
         }
 
-        private void OnDisable() {
-            _relationshipManager.OnCompanionLostTriggered -= HandleLostTriggered;
-            _relationshipManager.OnCompanionDeathTriggered -= HandleDeathTriggered;
-            _relationshipManager.OnCompanionRecoveredTriggered -= HandleRecoveredTriggered;
+        private LightSourceHandle FindPlayerLight() {
+            if (_lightRegistry == null || _player == null) return null;
+            var sources = _lightRegistry.ActiveSources;
+            for (int i = 0; i < sources.Count; i++) {
+                var handle = sources[i];
+                if (handle.Source != null && handle.Source.IsChildOf(_player.transform)) return handle;
+            }
+            return null;
         }
 
         private void Update() {
             if (_state == CompanionState.Dead) return; // финальное состояние, дальше ничего не тикаем
 
             float distanceToPlayer = Vector3.Distance(transform.position, _player.transform.position);
-            _relationshipManager.ReportCompanionStatus(_state == CompanionState.Waiting, distanceToPlayer);
+            // Нужно накоплению Fatigue (когда его включат); логика Lost/Death теперь здесь.
+            _relationshipManager.ReportCompanionStatus(
+                _state == CompanionState.Waiting, _state == CompanionState.Lost);
 
             ApplyFatigueToAgent();
 
@@ -99,8 +119,7 @@ namespace Game.AI {
                     TickWaiting(distanceToPlayer);
                     break;
                 case CompanionState.Lost:
-                    // Пока Lost — компаньон стоит на месте (агент уже остановлен в HandleLostTriggered).
-                    // Выход отсюда управляется только событиями RelationshipManager (Recovered/Death).
+                    TickLost();
                     break;
             }
         }
@@ -108,63 +127,102 @@ namespace Game.AI {
         private void ApplyFatigueToAgent() {
             float fatigue01 = _relationshipManager.Fatigue / RelationshipScale.Max;
             _agent.speed = baseAgentSpeed * (1f - fatigue01 * fatigueSpeedPenalty);
-            // блок с _refusalCheckTimer / _isRefusingThisTick — удалён целиком
+        }
+
+        // Единственный шлюз: имеет ли смысл вообще проверять отставание. Сейчас — только в Follow.
+        // Сюда позже добавятся: "не в безопасной (освещённой) зоне", режим Explore и т.п.
+        private bool CanFallBehind() {
+            return _state == CompanionState.Follow && fireTransform != null;
         }
 
         private void TickFollow(float distanceToPlayer) {
-            if (distanceToPlayer > returnToFireThreshold && fireTransform != null) {
-                _state = CompanionState.ReturnToFire;
-                _agent.SetDestination(fireTransform.position);
+            float threshold = ReturnToFireThreshold;
+            if (CanFallBehind() && distanceToPlayer > threshold) {
+                ResolveFallBehind(distanceToPlayer, threshold);
                 return;
             }
 
             if (distanceToPlayer > followDistance) {
                 _agent.SetDestination(_player.transform.position);
             } else {
-                _agent.ResetPath();
+                StopAgent();
             }
-            // проверка _isRefusingThisTick — удалена
+        }
+
+        // Одна проверка на отставание. Любой исход выводит её из Follow — повторных бросков нет.
+        private void ResolveFallBehind(float distance, float threshold) {
+            float lostChance = _relationshipManager.LostChance;
+            bool lost = UnityEngine.Random.value < lostChance;
+            Log($"отстала: дистанция {distance:0.#} > порог {threshold:0.#}; " +
+                $"шанс Lost {lostChance:P0} → {(lost ? "ВЫПАЛО" : "не выпало")}");
+
+            if (lost) BeginLost();
+            else BeginReturnToFire();
+        }
+
+        private void BeginReturnToFire() {
+            SetState(CompanionState.ReturnToFire);
+            _agent.SetDestination(fireTransform.position);
         }
 
         private void TickReturnToFire() {
             if (!_agent.pathPending && _agent.remainingDistance <= _agent.stoppingDistance) {
-                _state = CompanionState.Waiting;
-                _waitingTimer = 0f;
-                _waitingDurationTarget = UnityEngine.Random.Range(minWaitingDuration, maxWaitingDuration);
+                EnterRest();
             }
         }
 
-        private void TickWaiting(float distanceToPlayer) {
-            // Автоперехода больше нет — девочка стоит у костра, пока Follow не включат
-            // вручную через контекстное меню компонента (см. ForceFollow ниже).
+        // Все переходы "исследование → отдых" проходят здесь: сюда же позже встанет логика у костра.
+        private void EnterRest() {
+            SetState(CompanionState.Waiting);
+            _waitingTimer = 0f;
+            _waitingDurationTarget = UnityEngine.Random.Range(minWaitingDuration, maxWaitingDuration);
         }
 
-        private void HandleLostTriggered() {
-            _state = CompanionState.Lost;
-            _agent.ResetPath();
+        // Все переходы "отдых → исследование" проходят здесь.
+        private void ExitRest() {
+            SetState(CompanionState.Follow);
+            _agent.enabled = true;
+            StopAgent();
+        }
+
+        private void TickWaiting(float distanceToPlayer) {
+            // Автоперехода нет — девочка стоит у костра, пока Follow не включат вручную
+            // через контекстное меню компонента (см. ForceFollow ниже).
+        }
+
+        private void BeginLost() {
+            SetState(CompanionState.Lost);
+            StopAgent();
 
             if (TryFindNearbyDarkChunk(out Vector3 darkPosition)) {
                 _agent.Warp(darkPosition);
             }
             // Если Dark-чанк рядом не нашёлся — компаньон просто остаётся стоять там, где был.
 
+            _lostTimer = 0f;
+            _lostDuration = _relationshipManager.RollLostDuration();
+            Log($"Lost на {_lostDuration:0.#} с");
+
             OnLost?.Invoke();
         }
 
-        private void HandleDeathTriggered() {
-            _state = CompanionState.Dead;
-            //_agent.ResetPath();
-            //Вызывает вылет
-            _agent.enabled = false;
+        private void TickLost() {
+            _lostTimer += Time.deltaTime;
+            if (_lostTimer < _lostDuration) return;
 
-            OnDied?.Invoke();
+            float deathChance = _relationshipManager.DeathChance;
+            bool dies = UnityEngine.Random.value < deathChance;
+            Log($"Lost закончился; шанс Death {deathChance:P1} → {(dies ? "ВЫПАЛО" : "не выпало")}");
+
+            if (dies) Die();
+            else BeginReturnToFire();
         }
 
-        private void HandleRecoveredTriggered() {
-            if (_state != CompanionState.Lost) return;
-            // Раньше здесь был автопереход в ReturnToFire/Follow. Теперь просто "приходит в себя"
-            // и стоит на месте — дальше управляешь вручную через ForceFollow.
-            _state = CompanionState.Waiting;
+        private void Die() {
+            SetState(CompanionState.Dead);
+            StopAgent();
+            _agent.enabled = false;
+            OnDied?.Invoke();
         }
 
         private bool TryFindNearbyDarkChunk(out Vector3 worldPosition) {
@@ -186,15 +244,35 @@ namespace Game.AI {
             worldPosition = default;
             return false;
         }
-        // Доступно через кнопку ⋮ (три точки) на компоненте CompanionController в инспекторе
-        // во время Play Mode. Временный ручной контроль над Follow, пока не спроектирована
-        // логика автовозврата (анимации, реакция на приближение игрока и т.д. — отдельная задача).
+
+        // ResetPath допустим только у включённого агента, стоящего на NavMesh.
+        private void StopAgent() {
+            if (_agent.enabled && _agent.isOnNavMesh) _agent.ResetPath();
+        }
+
+        private void SetState(CompanionState newState) {
+            if (_state == newState) return;
+            Log($"{_state} → {newState}");
+            _state = newState;
+        }
+
+        private void Log(string message) {
+            if (logTransitions) Debug.Log($"[Companion] {message}");
+        }
+
+        // Доступно через кнопку ⋮ на компоненте CompanionController в инспекторе во время Play Mode.
+        // Временный ручной контроль, пока не спроектирована логика автовозврата.
         [ContextMenu("Force Follow")]
         private void ForceFollow() {
             if (_state == CompanionState.Dead) return;
-            _state = CompanionState.Follow;
-            _agent.enabled = true;
-            _agent.ResetPath();
+            ExitRest();
+        }
+
+        // Временная отладка: порог отставания вокруг героини (виден при выделенной девочке).
+        private void OnDrawGizmosSelected() {
+            if (_player == null) return;
+            Gizmos.color = Color.cyan;
+            Gizmos.DrawWireSphere(_player.transform.position, ReturnToFireThreshold);
         }
     }
 }

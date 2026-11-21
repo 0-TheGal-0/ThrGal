@@ -46,12 +46,12 @@ public interface IChunkManager {
         event Action<float> OnTrustChanged;
         event Action<float> OnFatigueChanged;
 
-        // Компаньон физически не может Lost/Dead себя сам решить — это функция от
-        // Trust/Fatigue, которые считает RelationshipManager. Он лишь сигнализирует
-        // об этом решении, а CompanionController слушает и переключает свой FSM.
-        event Action OnCompanionLostTriggered;
-        event Action OnCompanionDeathTriggered;
-        event Action OnCompanionRecoveredTriggered; // шанс найти дорогу обратно из Lost
+        // Lost/Death решает CompanionController (он знает расстояние и своё состояние).
+        // RelationshipManager только считает вероятности из Trust и Fatigue.
+        float Risk { get; }          // 0..1
+        float LostChance { get; }    // шанс Lost при отставании
+        float DeathChance { get; }   // шанс Death в конце Lost
+        float RollLostDuration();    // секунды, диапазон сдвигается с риском
 
         void AddTrust(float delta);
         void AddFatigue(float delta);
@@ -59,7 +59,8 @@ public interface IChunkManager {
         // Push, не pull: CompanionController вызывает это каждый кадр сам.
         // Так RelationshipManager не инжектит ICompanionController — иначе получили бы
         // циклическую DI-зависимость (CompanionController ← RelationshipManager ← CompanionController).
-        void ReportCompanionStatus(bool isAtFire, float distanceToPlayer);
+        // isLostOrDead замораживает накопление Fatigue, пока девочка потеряна.
+        void ReportCompanionStatus(bool isAtFire, bool isLostOrDead);
     }
     // Шкала Trust/Fatigue: значения лежат в [0, Max]. Тем, кому нужна доля 0..1
     // (скорость, эффекты), делить на Max.
@@ -89,7 +90,7 @@ public interface IChunkManager {
     // Реализуется в Procedural.asmdef на этапе 2. Список "якорных" чанков (сюжетные точки),
     // которые ChunkContentSpawner обязан пропускать при регенерации — тело девочки, ключевые
     // предметы и т.п. не должны потеряться при перегенерации мира.
-    public interface IChunkAnchorRegistry {
+        public interface IChunkAnchorRegistry {
         bool IsAnchor(Vector2Int coord);
         void RegisterAnchor(Vector2Int coord);
         void UnregisterAnchor(Vector2Int coord);

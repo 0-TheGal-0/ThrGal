@@ -1367,7 +1367,7 @@ MonoBehaviour:
   minWaitingDuration: 4
   maxWaitingDuration: 10
   resumeFollowDistance: 6
-  baseAgentSpeed: 3.5
+  baseAgentSpeed: 6
   fatigueSpeedPenalty: 0.6
   lostSearchRadiusInChunks: 5
 --- !u!195 &1335902452
@@ -2188,17 +2188,17 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: b0fd1f2b45cfb95488cb1d2c550a434f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Player::Game.Gameplay.RelationshipManager
-  trust: 40
+  trust: 16.2
   fatigue: 100
-  fatigueAccumulationEnabled: 0
+  fatigueAccumulationEnabled: 1
   fatigueGrowthPerSecond: 0.02
   fatigueRecoveryPerSecond: 0.08
   checkInterval: 1
-  trustThresholdForLost: 0.4
+  trustThresholdForLost: 40
   distanceThresholdForLost: 12
-  lostChancePerCheck: 1
-  deathChancePerCheck: 0.2
-  recoveryChancePerCheck: 0.3
+  lostChancePerCheck: 0.1
+  deathChancePerCheck: 0
+  recoveryChancePerCheck: 0.9
 --- !u!4 &1996687984
 Transform:
   m_ObjectHideFlags: 0
