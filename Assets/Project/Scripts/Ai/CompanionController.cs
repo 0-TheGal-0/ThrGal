@@ -106,8 +106,8 @@ namespace Game.AI {
         }
 
         private void ApplyFatigueToAgent() {
-            float fatigue = _relationshipManager.Fatigue;
-            _agent.speed = baseAgentSpeed * (1f - fatigue * fatigueSpeedPenalty);
+            float fatigue01 = _relationshipManager.Fatigue / RelationshipScale.Max;
+            _agent.speed = baseAgentSpeed * (1f - fatigue01 * fatigueSpeedPenalty);
             // блок с _refusalCheckTimer / _isRefusingThisTick — удалён целиком
         }
 
@@ -153,7 +153,8 @@ namespace Game.AI {
 
         private void HandleDeathTriggered() {
             _state = CompanionState.Dead;
-            _agent.ResetPath();
+            //_agent.ResetPath();
+            //Вызывает вылет
             _agent.enabled = false;
 
             OnDied?.Invoke();

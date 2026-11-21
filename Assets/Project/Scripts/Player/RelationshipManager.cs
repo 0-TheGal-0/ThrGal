@@ -8,18 +8,18 @@ namespace Game.Gameplay {
     // напрямую (см. комментарий в GameLifetimeScope про циклическую DI), только принимает
     // данные через ReportCompanionStatus и отдаёт события-решения наружу.
     public class RelationshipManager : MonoBehaviour, IRelationshipManager {
-        [Header("Base values")]
-        [SerializeField, Range(0f, 1f)] private float trust = 0.6f;
-        [SerializeField, Range(0f, 1f)] private float fatigue = 0f;
+        [Header("Base values (0–100)")]
+        [SerializeField, Range(0f, RelationshipScale.Max)] private float trust = 60f;
+        [SerializeField, Range(0f, RelationshipScale.Max)] private float fatigue = 0f;
 
-        [Header("Fatigue rate")]
-        [SerializeField] private bool fatigueAccumulationEnabled = false; // временно выключено на тест-проходе
-        [SerializeField] private float fatigueGrowthPerSecond = 0.02f;
-        [SerializeField] private float fatigueRecoveryPerSecond = 0.08f;
+        [Header("Fatigue rate (единиц в секунду, шкала 0–100)")]
+        [SerializeField] private bool fatigueAccumulationEnabled = false;
+        [SerializeField] private float fatigueGrowthPerSecond = 2f;
+        [SerializeField] private float fatigueRecoveryPerSecond = 8f;
 
         [Header("Lost/Dead — ЗАВЫШЕНО для тестирования, снизить на баланс-проходе")]
         [SerializeField] private float checkInterval = 5f;
-        [SerializeField, Range(0f, 1f)] private float trustThresholdForLost = 0.4f;
+        [SerializeField, Range(0f, RelationshipScale.Max)] private float trustThresholdForLost = 40f;
         [SerializeField] private float distanceThresholdForLost = 12f;
         [SerializeField, Range(0f, 1f)] private float lostChancePerCheck = 0.5f;
         [SerializeField, Range(0f, 1f)] private float deathChancePerCheck = 0.2f;
@@ -64,7 +64,7 @@ namespace Game.Gameplay {
             // не хотим, чтобы значение продолжало расти в фоне и путало отладку.
             if (_isCompanionLost) return;
 
-            float delta = (_isCompanionAtFire ? fatigueRecoveryPerSecond : -fatigueGrowthPerSecond)
+            float delta = (_isCompanionAtFire ? -fatigueRecoveryPerSecond : fatigueGrowthPerSecond)
                           * Time.deltaTime;
             AddFatigue(delta);
         }

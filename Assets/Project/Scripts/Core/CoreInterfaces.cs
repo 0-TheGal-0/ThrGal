@@ -61,6 +61,11 @@ public interface IChunkManager {
         // циклическую DI-зависимость (CompanionController ← RelationshipManager ← CompanionController).
         void ReportCompanionStatus(bool isAtFire, float distanceToPlayer);
     }
+    // Шкала Trust/Fatigue: значения лежат в [0, Max]. Тем, кому нужна доля 0..1
+    // (скорость, эффекты), делить на Max.
+    public static class RelationshipScale {
+        public const float Max = 100f;
+    }
 
     // Реализуется в AI.asmdef на этапе 4
     public interface ICompanionController {
