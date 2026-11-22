@@ -13,6 +13,7 @@ namespace Game.Procedural {
 
         private void Awake() {
             _byId.Clear();
+            MaxFootprintRadius = 0f;
             if (biomes != null) {
                 foreach (var b in biomes) {
                     if (b == null) continue;
@@ -20,6 +21,10 @@ namespace Game.Procedural {
                         Debug.LogWarning($"BiomeMap: повторяющийся biomeId {b.BiomeId} ({b.name}), пропущен.");
                     else
                         _byId.Add(b.BiomeId, b);
+                    foreach (var e in b.Entries) {
+                        if (e == null || e.prefab == null) continue;
+                        MaxFootprintRadius = Mathf.Max(MaxFootprintRadius, e.footprintRadius * e.scaleRange.y);
+                    }
                 }
             }
             if (chunkMap == null || !chunkMap.HasBiomes)
@@ -46,6 +51,8 @@ namespace Game.Procedural {
             return false;
         }
         public float ChunkSize => chunkMap != null ? chunkMap.ChunkSize : 10f;
+        // Самый большой отпечаток среди объектов всех биомов (с максимальным масштабом).
+        public float MaxFootprintRadius { get; private set; }
 
         public bool IsRoadAt(Vector3 worldPosition) {
             return chunkMap != null && chunkMap.IsRoadAt(worldPosition);

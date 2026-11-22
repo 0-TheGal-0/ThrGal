@@ -13,6 +13,8 @@ namespace Game.Procedural {
 
         [Tooltip("Сколько раз пробовать найти подходящую точку для одного объекта, прежде чем пропустить его.")]
         [SerializeField, Min(1)] private int maxPlacementAttempts = 8;
+        [Tooltip("Минимальный зазор (м) между краями отпечатков двух объектов.")]
+        [SerializeField, Min(0f)] private float footprintPadding = 0.5f;
         [Header("Чистая зона")]
         [Tooltip("Центр зоны без контента (костёр). Если не назначен, зона отключена.")]
         [SerializeField] private Transform clearZoneCenter;
@@ -31,8 +33,14 @@ namespace Game.Procedural {
         // на этапе 7 это значение нужно будет сохранять вместе с остальным состоянием мира.
         private readonly Dictionary<Vector2Int, int> _visitCounts = new();
 
-        // Что сейчас стоит в чанке: инстанс + префаб, из которого он создан (для Release в пул).
-        private readonly Dictionary<Vector2Int, List<(GameObject instance, GameObject prefab)>> _spawnedContent = new();
+        private struct SpawnedObject {
+            public GameObject Instance;
+            public GameObject Prefab;   // из какого префаба создан (для Release в пул)
+            public Vector2 Xz;          // центр отпечатка в плоскости XZ
+            public float Radius;        // радиус отпечатка уже с учётом масштаба
+        }
+
+        private readonly Dictionary<Vector2Int, List<SpawnedObject>> _spawnedContent = new();
 
         [Inject]
         public void Construct(IChunkManager chunkManager, IChunkAnchorRegistry anchorRegistry,
@@ -98,38 +106,7 @@ namespace Game.Procedural {
             if (count <= 0) return;
 
             if (!_spawnedContent.TryGetValue(coord, out var list))
-                _spawnedContent[coord] = list = new List<(GameObject, GameObject)>();
-
-            for (int i = 0; i < count; i++)
-                TryPlaceOne(coord, biome, random, list);
-        }
-
-        private void RegenerateChunk(Vector2Int coord) {
-            _visitCounts.TryGetValue(coord, out int visit);
-            _visitCounts[coord] = visit + 1;
-
-            ReleaseChunkContent(coord);
-
-            if (_terrain == null) _terrain = Terrain.activeTerrain;
-            if (_terrain == null) {
-                Debug.LogWarning("ChunkContentSpawner: на сцене нет активного Terrain, размещать не на чем.");
-                return;
-            }
-
-            if (!_biomeMap.TryGetDefinition(coord, out var biome)) {
-                Debug.LogWarning($"ChunkContentSpawner: у чанка {coord} нет биома или для его id нет BiomeDefinition.");
-                return;
-            }
-            if (biome.Entries.Count == 0) return;
-
-            // Все случайные числа этого чанка идут из одного генератора в фиксированном порядке:
-            // (seed, coord, visit) -> один и тот же результат.
-            var random = _seedProvider.GetRandom(coord, visit);
-            int count = random.Next(biome.MinObjectsPerChunk, biome.MaxObjectsPerChunk + 1);
-            if (count <= 0) return;
-
-            if (!_spawnedContent.TryGetValue(coord, out var list))
-                _spawnedContent[coord] = list = new List<(GameObject, GameObject)>();
+                _spawnedContent[coord] = list = new List<SpawnedObject>();
 
             for (int i = 0; i < count; i++)
                 TryPlaceOne(coord, biome, random, list);
@@ -137,14 +114,14 @@ namespace Game.Procedural {
 
         private void ReleaseChunkContent(Vector2Int coord) {
             if (!_spawnedContent.TryGetValue(coord, out var list)) return;
-            foreach (var (instance, prefab) in list) {
-                if (instance != null) _pool.Release(prefab, instance);
+            foreach (var o in list) {
+                if (o.Instance != null) _pool.Release(o.Prefab, o.Instance);
             }
             list.Clear();
         }
 
         private void TryPlaceOne(Vector2Int coord, BiomeDefinition biome, System.Random random,
-            List<(GameObject instance, GameObject prefab)> list) {
+            List<SpawnedObject> list) {
             Vector3 center = _chunkManager.ChunkToWorldCenter(coord);
             float half = Mathf.Max(0f, _biomeMap.ChunkSize * 0.5f - edgeMargin);
 
@@ -157,19 +134,48 @@ namespace Game.Procedural {
 
                 if (GetSlope(x, z) > entry.maxSlopeDegrees) continue;
                 if (IsNearRoad(x, z, entry.roadClearance)) continue;
-                if (IsInClearZone(x, z)) continue;          // <- новая строка
+                if (IsInClearZone(x, z)) continue;
+                // Масштаб ещё не бросали, поэтому проверяем по максимальному: так порядок
+                // случайных чисел остаётся прежним. Запас небольшой, объект просто может не влезть чуть чаще.
+                if (OverlapsExisting(coord, x, z, entry.footprintRadius * entry.scaleRange.y)) continue;
 
                 float yaw = (float)(random.NextDouble() * 360.0);
                 float scale = Mathf.Lerp(entry.scaleRange.x, entry.scaleRange.y, (float)random.NextDouble());
 
                 var position = new Vector3(x, GetGroundY(x, z), z);
                 var instance = _pool.Get(entry.prefab, position, Quaternion.Euler(0f, yaw, 0f), transform);
-                // Из пула приходит инстанс с масштабом прошлого использования — задаём заново.
+                // Из пула приходит инстанс с масштабом прошлого использования, задаём заново.
                 instance.transform.localScale = entry.prefab.transform.localScale * scale;
-                list.Add((instance, entry.prefab));
+                list.Add(new SpawnedObject {
+                    Instance = instance,
+                    Prefab = entry.prefab,
+                    Xz = new Vector2(x, z),
+                    Radius = entry.footprintRadius * scale   // в хранилище кладём фактический радиус
+                });
                 return;
             }
-            // Подходящей точки не нашлось за maxPlacementAttempts попыток — объект пропускаем.
+            // Подходящей точки не нашлось за maxPlacementAttempts попыток, объект пропускаем.
+        }
+
+        // Пересекается ли круг (x, z, radius) с отпечатками уже стоящих объектов
+        // в этом чанке и в соседях. Свой чанк входит в обход: его список уже лежит в словаре.
+        private bool OverlapsExisting(Vector2Int coord, float x, float z, float radius) {
+            float reach = _biomeMap.MaxFootprintRadius + radius + footprintPadding;
+            int range = Mathf.CeilToInt(reach / _biomeMap.ChunkSize);
+
+            for (int dx = -range; dx <= range; dx++) {
+                for (int dz = -range; dz <= range; dz++) {
+                    if (!_spawnedContent.TryGetValue(new Vector2Int(coord.x + dx, coord.y + dz), out var others))
+                        continue;
+                    foreach (var o in others) {
+                        float min = o.Radius + radius + footprintPadding;
+                        float ddx = x - o.Xz.x;
+                        float ddz = z - o.Xz.y;
+                        if (ddx * ddx + ddz * ddz < min * min) return true;
+                    }
+                }
+            }
+            return false;
         }
 
         private BiomeObjectEntry PickEntry(System.Random random, BiomeDefinition biome) {
@@ -229,5 +235,15 @@ namespace Game.Procedural {
         // Заглушка до этапа 6. Сознательно не инжектю ISanityManager сейчас —
         // он ещё не зарегистрирован в LifetimeScope.
         private float GetSanityFactor() => 0f;
+        // Оранжевые сферы = отпечатки. Видны в Scene view, пока спавнер выделен в Hierarchy (в Play).
+        private void OnDrawGizmosSelected() {
+            Gizmos.color = new Color(1f, 0.6f, 0f, 0.8f);
+            foreach (var pair in _spawnedContent) {
+                foreach (var o in pair.Value) {
+                    if (o.Radius <= 0f || o.Instance == null) continue;
+                    Gizmos.DrawWireSphere(o.Instance.transform.position, o.Radius);
+                }
+            }
+        }
     }
 }
