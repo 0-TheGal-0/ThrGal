@@ -1,9 +1,10 @@
 ﻿<Solution>
   <Project Path="Bootstrap.csproj" />
   <Project Path="Procedural.csproj" />
-  <Project Path="Player.csproj" />
   <Project Path="Ai.csproj" />
+  <Project Path="Player.csproj" />
   <Project Path="Assembly-CSharp-Editor.csproj" />
+  <Project Path="Gameplay.csproj" />
   <Project Path="Core.csproj" />
   <Project Path="Assembly-CSharp.csproj" />
 </Solution>
