@@ -50,6 +50,14 @@ namespace Game.Procedural {
             definition = null;
             return false;
         }
+        // Биом под точкой по маске: разрешение маски, а не чанка.
+        public bool TryGetDefinitionAt(Vector3 worldPosition, out BiomeDefinition definition) {
+            if (chunkMap != null && chunkMap.TryGetBiomeIdAt(worldPosition, out int id)
+                && _byId.TryGetValue(id, out definition))
+                return true;
+            definition = null;
+            return false;
+        }
         public float ChunkSize => chunkMap != null ? chunkMap.ChunkSize : 10f;
         // Самый большой отпечаток среди объектов всех биомов (с максимальным масштабом).
         public float MaxFootprintRadius { get; private set; }

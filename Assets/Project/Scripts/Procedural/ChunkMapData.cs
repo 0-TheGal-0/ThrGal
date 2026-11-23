@@ -99,18 +99,32 @@ namespace Game.Procedural {
             coverage = 0f;
             return false;
         }
-        // Точечная проверка дороги по маске (G >= 0.5). Нужна размещению объектов:
-        // roadCoverage говорит только «сколько дороги в чанке», а не «где именно».
-        public bool IsRoadAt(Vector3 world) {
+        // Пиксель маски под мировой точкой (X, Z). false, если маски нет или точка вне её.
+        private bool TryGetMaskPixel(Vector3 world, out int px, out int py) {
+            px = py = 0;
             if (!HasBiomes || biomeMask == null || maskSizeXZ.x <= 0f || maskSizeXZ.y <= 0f) return false;
 
             float u = (world.x - maskOriginXZ.x) / maskSizeXZ.x;
             float v = (world.z - maskOriginXZ.y) / maskSizeXZ.y;
             if (u < 0f || u >= 1f || v < 0f || v >= 1f) return false;
 
-            int px = Mathf.Clamp((int)(u * biomeMask.width), 0, biomeMask.width - 1);
-            int py = Mathf.Clamp((int)(v * biomeMask.height), 0, biomeMask.height - 1);
-            return biomeMask.GetPixel(px, py).g >= 0.5f;
+            px = Mathf.Clamp((int)(u * biomeMask.width), 0, biomeMask.width - 1);
+            py = Mathf.Clamp((int)(v * biomeMask.height), 0, biomeMask.height - 1);
+            return true;
+        }
+
+        // Точечная проверка дороги по маске (G >= 0.5). Поведение то же, что было.
+        public bool IsRoadAt(Vector3 world) {
+            return TryGetMaskPixel(world, out int px, out int py)
+                && biomeMask.GetPixel(px, py).g >= 0.5f;
+        }
+
+        // Id биома под точкой по R-каналу маски. 0 («нет биома») или точка вне маски -> false.
+        public bool TryGetBiomeIdAt(Vector3 world, out int id) {
+            id = 0;
+            if (!TryGetMaskPixel(world, out int px, out int py)) return false;
+            id = Mathf.RoundToInt(biomeMask.GetPixel(px, py).r * 255f);
+            return id != 0;
         }
 
 #if UNITY_EDITOR

@@ -38,6 +38,7 @@ namespace Game.Procedural {
             public GameObject Prefab;   // из какого префаба создан (для Release в пул)
             public Vector2 Xz;          // центр отпечатка в плоскости XZ
             public float Radius;        // радиус отпечатка уже с учётом масштаба
+            public int BiomeId;
         }
 
         private readonly Dictionary<Vector2Int, List<SpawnedObject>> _spawnedContent = new();
@@ -109,7 +110,7 @@ namespace Game.Procedural {
                 _spawnedContent[coord] = list = new List<SpawnedObject>();
 
             for (int i = 0; i < count; i++)
-                TryPlaceOne(coord, biome, random, list);
+                TryPlaceOne(coord, random, list);
         }
 
         private void ReleaseChunkContent(Vector2Int coord) {
@@ -120,23 +121,24 @@ namespace Game.Procedural {
             list.Clear();
         }
 
-        private void TryPlaceOne(Vector2Int coord, BiomeDefinition biome, System.Random random,
-            List<SpawnedObject> list) {
+        private void TryPlaceOne(Vector2Int coord, System.Random random, List<SpawnedObject> list) {
             Vector3 center = _chunkManager.ChunkToWorldCenter(coord);
             float half = Mathf.Max(0f, _biomeMap.ChunkSize * 0.5f - edgeMargin);
 
             for (int attempt = 0; attempt < maxPlacementAttempts; attempt++) {
-                var entry = PickEntry(random, biome);
-                if (entry == null) return;
-
                 float x = center.x + (float)(random.NextDouble() * 2.0 - 1.0) * half;
                 float z = center.z + (float)(random.NextDouble() * 2.0 - 1.0) * half;
+
+                // Биом берём по точке: граница идёт по маске, а не ступеньками по чанкам.
+                // Нет биома или нет BiomeDefinition для него: пробуем другую точку.
+                if (!_biomeMap.TryGetDefinitionAt(new Vector3(x, 0f, z), out var pointBiome)) continue;
+
+                var entry = PickEntry(random, pointBiome);
+                if (entry == null) continue;
 
                 if (GetSlope(x, z) > entry.maxSlopeDegrees) continue;
                 if (IsNearRoad(x, z, entry.roadClearance)) continue;
                 if (IsInClearZone(x, z)) continue;
-                // Масштаб ещё не бросали, поэтому проверяем по максимальному: так порядок
-                // случайных чисел остаётся прежним. Запас небольшой, объект просто может не влезть чуть чаще.
                 if (OverlapsExisting(coord, x, z, entry.footprintRadius * entry.scaleRange.y)) continue;
 
                 float yaw = (float)(random.NextDouble() * 360.0);
@@ -144,17 +146,16 @@ namespace Game.Procedural {
 
                 var position = new Vector3(x, GetGroundY(x, z), z);
                 var instance = _pool.Get(entry.prefab, position, Quaternion.Euler(0f, yaw, 0f), transform);
-                // Из пула приходит инстанс с масштабом прошлого использования, задаём заново.
                 instance.transform.localScale = entry.prefab.transform.localScale * scale;
                 list.Add(new SpawnedObject {
                     Instance = instance,
                     Prefab = entry.prefab,
                     Xz = new Vector2(x, z),
-                    Radius = entry.footprintRadius * scale   // в хранилище кладём фактический радиус
+                    Radius = entry.footprintRadius * scale,
+                    BiomeId = pointBiome.BiomeId
                 });
                 return;
             }
-            // Подходящей точки не нашлось за maxPlacementAttempts попыток, объект пропускаем.
         }
 
         // Пересекается ли круг (x, z, radius) с отпечатками уже стоящих объектов
@@ -235,13 +236,14 @@ namespace Game.Procedural {
         // Заглушка до этапа 6. Сознательно не инжектю ISanityManager сейчас —
         // он ещё не зарегистрирован в LifetimeScope.
         private float GetSanityFactor() => 0f;
-        // Оранжевые сферы = отпечатки. Видны в Scene view, пока спавнер выделен в Hierarchy (в Play).
+        // Сфера на каждом объекте: цвет = биом, радиус = отпечаток (минимум 0.4 м, чтобы было видно).
+        // Видно в Scene view, пока спавнер выделен в Hierarchy (в Play).
         private void OnDrawGizmosSelected() {
-            Gizmos.color = new Color(1f, 0.6f, 0f, 0.8f);
             foreach (var pair in _spawnedContent) {
                 foreach (var o in pair.Value) {
-                    if (o.Radius <= 0f || o.Instance == null) continue;
-                    Gizmos.DrawWireSphere(o.Instance.transform.position, o.Radius);
+                    if (o.Instance == null) continue;
+                    Gizmos.color = Color.HSVToRGB((o.BiomeId * 0.23f) % 1f, 0.8f, 1f);
+                    Gizmos.DrawWireSphere(o.Instance.transform.position, Mathf.Max(o.Radius, 0.4f));
                 }
             }
         }
