@@ -33,5 +33,16 @@ namespace Game.Procedural {
                 return new System.Random((int)(h ^ (h >> 32)));
             }
         }
+        // Смещение для шума по миру. Зависит только от globalSeed, поэтому поля плотности
+        // воспроизводимы и не меняются при регенерации. salt даёт независимые поля при необходимости.
+        // Perlin зеркалит отрицательные координаты, поэтому уводим смещение в большой положительный диапазон.
+        public Vector2 GetNoiseOffset(int salt) {
+            unchecked {
+                ulong h = Mix(Mix((uint)_globalSeed) ^ (uint)salt);
+                float ox = 1000f + (float)((uint)h % 100000u);
+                float oz = 1000f + (float)((uint)(h >> 32) % 100000u);
+                return new Vector2(ox, oz);
+            }
+        }
     }
 }

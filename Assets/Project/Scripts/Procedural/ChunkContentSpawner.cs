@@ -28,6 +28,7 @@ namespace Game.Procedural {
         private BiomeMap _biomeMap;
         private ChunkObjectPool _pool;
         private Terrain _terrain;
+        private Vector2 _densityOffset;
 
         // Сколько раз чанк уже регенерировался. Пока живёт только в памяти;
         // на этапе 7 это значение нужно будет сохранять вместе с остальным состоянием мира.
@@ -50,6 +51,7 @@ namespace Game.Procedural {
             _anchorRegistry = anchorRegistry;
             _seedProvider = seedProvider;
             _biomeMap = biomeMap;
+            _densityOffset = seedProvider.GetNoiseOffset(1);
         }
 
         private void Awake() {
@@ -135,11 +137,19 @@ namespace Game.Procedural {
 
                 var entry = PickEntry(random, pointBiome);
                 if (entry == null) continue;
+                // Лимит «уникальных»: считаем уже стоящие экземпляры этого префаба во всех чанках.
+                // continue, а не return: следующая попытка выберет другую запись, слот не пропадает.
+                if (entry.maxInWorld > 0 && CountLive(entry.prefab) >= entry.maxInWorld) continue;
 
                 if (GetSlope(x, z) > entry.maxSlopeDegrees) continue;
                 if (IsNearRoad(x, z, entry.roadClearance)) continue;
                 if (IsInClearZone(x, z)) continue;
                 if (OverlapsExisting(coord, x, z, entry.footprintRadius * entry.scaleRange.y)) continue;
+                // Прореживание по плотности. Слот при провале пропускаем (return), а не ищем другое место:
+                // иначе объекты стекались бы в плотные участки чанка, и поляны не получались бы пустыми.
+                // При density = 1 случайное число не тратится, раскладка остаётся прежней.
+                float density = GetDensity(x, z, pointBiome);
+                if (density < 1f && random.NextDouble() >= density) return;
 
                 float yaw = (float)(random.NextDouble() * 360.0);
                 float scale = Mathf.Lerp(entry.scaleRange.x, entry.scaleRange.y, (float)random.NextDouble());
@@ -177,6 +187,16 @@ namespace Game.Procedural {
                 }
             }
             return false;
+        }
+        // Сколько экземпляров префаба сейчас стоит в мире (по всем чанкам).
+        private int CountLive(GameObject prefab) {
+            int count = 0;
+            foreach (var pair in _spawnedContent) {
+                foreach (var o in pair.Value) {
+                    if (o.Prefab == prefab) count++;
+                }
+            }
+            return count;
         }
 
         private BiomeObjectEntry PickEntry(System.Random random, BiomeDefinition biome) {
@@ -227,6 +247,18 @@ namespace Game.Procedural {
             float nz = Mathf.Clamp01((z - pos.z) / data.size.z);
             return data.GetSteepness(nx, nz);
         }
+        // Плотность 0..1 в точке: статичное поле шума от seed мира, от visit не зависит.
+        // Сюда же позже добавится ручной слой (канал B маски): домножим результат на него.
+        private float GetDensity(float x, float z, BiomeDefinition biome) {
+            float strength = biome.DensityNoiseStrength;
+            if (strength <= 0f) return 1f;
+
+            float scale = Mathf.Max(1f, biome.DensityNoiseScale);
+            float n = Mathf.PerlinNoise(x / scale + _densityOffset.x, z / scale + _densityOffset.y);
+            // Одноактавный Perlin редко выходит за ~0.25..0.75: растягиваем 0.3..0.7 на 0..1.
+            float t = Mathf.Clamp01(Mathf.InverseLerp(0.3f, 0.7f, n));
+            return Mathf.Lerp(1f, t, strength);
+        }
 
         // SampleHeight возвращает высоту относительно позиции террейна — добавляем её Y.
         private float GetGroundY(float x, float z) {
@@ -246,6 +278,19 @@ namespace Game.Procedural {
                     Gizmos.DrawWireSphere(o.Instance.transform.position, Mathf.Max(o.Radius, 0.4f));
                 }
             }
+        }
+        // В Play: правый клик по заголовку компонента ChunkContentSpawner -> эта команда.
+        [ContextMenu("Debug: Count live objects by prefab")]
+        private void DebugCountLive() {
+            var counts = new Dictionary<string, int>();
+            foreach (var pair in _spawnedContent) {
+                foreach (var o in pair.Value) {
+                    if (o.Instance == null) continue;
+                    string key = o.Prefab.name;
+                    counts[key] = counts.TryGetValue(key, out int n) ? n + 1 : 1;
+                }
+            }
+            foreach (var kv in counts) Debug.Log($"[Spawner] {kv.Key}: {kv.Value}");
         }
     }
 }
